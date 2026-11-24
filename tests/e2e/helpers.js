@@ -49,7 +49,7 @@ async function startServer(extraArgs = [], env = {}) {
   const token = fs.readFileSync(path.join(dir, 'demo.token'), 'utf8').trim();
   return {
     url, dir, port, token, logs,
-    async restart(downMs = 0) { await killIt(); if (downMs) await new Promise((r) => setTimeout(r, downMs)); await spawnIt(); },
+    async restart(downMs = 0, whileDown) { await killIt(); if (downMs) await new Promise((r) => setTimeout(r, downMs)); if (whileDown) await whileDown(); await spawnIt(); },
     async stop() { await killIt(); fs.rmSync(dir, { recursive: true, force: true }); },
   };
 }

@@ -117,3 +117,35 @@ test('the server restarting is invisible to phones: they reconnect on their own 
   console.log(`      server restart -> phone reconnected and showed the new price after ${Date.now() - t0} ms`);
   await ctx.close();
 });
+
+test('restoring the shop from an OLDER backup: phones that were ahead notice, discard stale prices and show the restored data', async () => {
+  const { execFileSync } = require('node:child_process');
+  const fs = require('node:fs'); const path = require('node:path');
+  const { BIN } = require('./helpers.js');
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 780 } });
+  const page = await ctx.newPage();
+  await ready(page);
+  const item = demoItem('Hair oil'), code = item.code;
+  await look(page, code);
+  await page.waitForSelector('.sheet-card .amt');
+  assert.equal(await price(page), item.priceText);
+
+  const backup = path.join(srv.dir, 'older-copy.db');
+  execFileSync(BIN, ['store', 'backup', '-data', srv.dir, '-slug', 'demo', '-out', backup]);   // the "yesterday" backup
+  admin = await adminApi(srv.url);
+  await admin('PUT', `products/${code}/price`, { price: item.price + 700 });
+  await waitPrice(page, (item.price + 700).toLocaleString('en-US'));                              // phone is now AHEAD of the backup
+
+  await srv.restart(200, async () => {                                                            // disaster: restore yesterday's file
+    for (const ext of ['', '-wal', '-shm']) fs.rmSync(path.join(srv.dir, 'demo.db' + ext), { force: true });
+    fs.copyFileSync(backup, path.join(srv.dir, 'demo.db'));
+  });
+
+  await page.waitForFunction(() => document.getElementById('live').classList.contains('on'), null, { timeout: 15000 });
+  await wait(500);
+  await page.click('.sheet-card .close').catch(() => { });
+  await look(page, code);
+  await page.waitForSelector('.sheet-card .amt');
+  assert.equal(await price(page), item.priceText, 'must show the restored price, not the newer one cached on the phone');
+  await ctx.close();
+});

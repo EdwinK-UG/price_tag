@@ -62,14 +62,16 @@ func New(cfg Config) (*Server, error) {
 	if cfg.MaxSSEPerStore <= 0 {
 		cfg.MaxSSEPerStore = 20000
 	}
+	// Every phone on a shop's Wi-Fi (and on one mobile carrier's NAT) shares ONE
+	// public IP, so per-IP limits must be sized for a whole store, not one person.
 	if cfg.MaxSSEPerIP <= 0 {
-		cfg.MaxSSEPerIP = 100
+		cfg.MaxSSEPerIP = 1000
 	}
 	if cfg.PublicRPS <= 0 {
-		cfg.PublicRPS = 50
+		cfg.PublicRPS = 100
 	}
 	if cfg.PublicBurst <= 0 {
-		cfg.PublicBurst = 200
+		cfg.PublicBurst = 400
 	}
 	sweepStaleExports(cfg.DataDir, cfg.Logger)
 	st, err := loadStatic(web.FS)

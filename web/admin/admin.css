@@ -23,8 +23,9 @@ input[type=text],input[type=search],input[type=email],input[type=password],input
 textarea{min-height:70px}
 label{display:block;font-weight:600;font-size:14px;margin:12px 0 4px}
 label small{font-weight:400;color:var(--mute)}
-.btn{min-height:42px;padding:0 16px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-weight:600}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 16px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-weight:600;text-decoration:none;color:var(--ink)}
 .btn.primary{background:var(--brand);color:var(--brand-ink);border-color:var(--brand)}
+.btn.small{min-height:34px}
 .btn.danger{color:var(--bad);border-color:var(--bad)}
 .btn.small{min-height:34px;padding:0 10px;font-size:13px}
 .btn:disabled{opacity:.5;cursor:default}

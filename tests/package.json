@@ -1,0 +1,14 @@
+{
+  "name": "price-tag-tests",
+  "private": true,
+  "description": "Browser and JS unit tests for Price Tag. Run: npm ci && npm test (needs the server built at ../bin/pricetag)",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 js/*.test.js e2e/*.e2e.js",
+    "test:unit": "node --test js/*.test.js",
+    "test:e2e": "node --test --test-concurrency=1 e2e/*.e2e.js"
+  },
+  "devDependencies": {
+    "acorn": "^8.14.0",
+    "playwright": "1.63.0"
+  }
+}

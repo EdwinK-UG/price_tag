@@ -8,3 +8,6 @@ e2e/.artifacts/
 e2e/fixtures/*.mjpeg
 coverage.out
 .DS_Store
+tests/node_modules/
+tests/e2e/.artifacts/
+tests/e2e/fixtures/

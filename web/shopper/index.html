@@ -1,1 +1,57 @@
-placeholder
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b6b4f">
+<title>Price check</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="/static/shared/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/shared/icon-192.png">
+<link rel="stylesheet" href="/static/shopper/app.css">
+</head>
+<body>
+<header class="top">
+  <h1 id="storeName">Price check</h1>
+  <span id="live" class="dot" role="img" aria-label="Connecting"></span>
+  <button id="menuBtn" class="icon" aria-label="Menu">&#8943;</button>
+</header>
+<main>
+  <p id="notice" class="notice" role="status" hidden></p>
+  <p id="announce" class="announce" hidden></p>
+  <button id="scanBtn" class="scan" type="button">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M3 5h2v14H3zm4 0h1v14H7zm3 0h3v14h-3zm5 0h1v14h-1zm3 0h3v14h-3z"/></svg>
+    Scan a barcode
+  </button>
+  <form id="find" class="find" role="search" autocomplete="off">
+    <input id="q" type="search" inputmode="search" enterkeyhint="search" placeholder="Type a number or product name" aria-label="Barcode number or product name" maxlength="60">
+    <button type="submit">Find</button>
+  </form>
+  <section id="recent" hidden>
+    <div class="sec-h"><h2>Recently checked</h2><button id="clearRecent" class="link" type="button">Clear</button></div>
+    <ul id="recentList" class="rows"></ul>
+  </section>
+  <section id="offers" aria-live="polite"></section>
+  <p class="foot">Prices update live from the shop's own price list.</p>
+</main>
+
+<div id="sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="sheet-card" id="sheetCard"></div>
+</div>
+
+<div id="scanner" class="scanner" hidden role="dialog" aria-modal="true" aria-label="Barcode scanner">
+  <video id="cam" playsinline muted></video>
+  <div class="frame" aria-hidden="true"><i></i></div>
+  <p id="scanMsg" class="scan-msg" role="status">Point the camera at the barcode</p>
+  <div class="scan-bar">
+    <button id="scanClose" type="button">Close</button>
+    <button id="torchBtn" type="button" hidden>Light</button>
+    <button id="zoomBtn" type="button" hidden>Zoom</button>
+  </div>
+</div>
+<p id="toast" class="toast" role="status" hidden></p>
+<noscript><p class="notice">This page needs JavaScript. Ask staff for the price.</p></noscript>
+<script src="/static/shopper/code.js" defer></script>
+<script src="/static/shopper/app.js" defer></script>
+</body>
+</html>

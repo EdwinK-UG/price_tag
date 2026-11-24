@@ -1,0 +1,10 @@
+Third-party code shipped in this directory
+==========================================
+
+qrcode-generator-1.4.4.js
+  QR Code Generator for JavaScript, Copyright (c) 2009 Kazuhiko Arase
+  MIT licence (full text in the file header). https://github.com/kazuhikoarase/qrcode-generator
+  Used only by the store-owner admin page to draw the shop-entrance QR poster.
+  The word "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
+
+File names carry the library version so the server can cache them as immutable.

@@ -1,1 +1,28 @@
-placeholder
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Test barcodes</title>
+<link rel="icon" href="/static/shared/icon.svg" type="image/svg+xml">
+<style>
+body{margin:0;font:15px/1.4 system-ui,sans-serif;color:#111;background:#fff;padding:16px}
+h1{font-size:20px;margin:0 0 4px}p.hint{margin:0 0 16px;color:#555;max-width:44em}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+figure{margin:0;padding:10px;border:1px solid #ccc;border-radius:10px;break-inside:avoid;text-align:center}
+figure svg{width:100%;height:auto;background:#fff}
+figcaption{font-size:13px;margin-top:4px}figcaption b{display:block;font-size:14px}
+code{font-size:12px;color:#444}
+.bar{margin-bottom:14px;display:flex;gap:10px;align-items:center}button{font:inherit;padding:8px 14px;border:1px solid #888;border-radius:8px;background:#f3f3f3}
+@media print{.bar,p.hint{display:none}body{padding:0}}
+</style>
+</head>
+<body>
+<h1 id="t">Test barcodes</h1>
+<p class="hint">Open the shop page on your phone, tap <b>Scan a barcode</b>, and point the camera at a code on this screen (or print the page). Each code is a demo product that exists in this shop's price list.</p>
+<div class="bar"><button id="print" type="button">Print this page</button><span id="count"></span></div>
+<div class="grid" id="grid"></div>
+<script src="/static/shared/ean.js"></script>
+<script src="/static/shared/test-sheet.js"></script>
+</body>
+</html>

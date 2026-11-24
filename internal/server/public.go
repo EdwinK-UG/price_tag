@@ -199,20 +199,25 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return rc.Flush() == nil
 	}
 
+	// Last-Event-ID (sent by the browser on automatic reconnects) is newer than
+	// the ?since= in the original URL, so it wins.
 	since := int64(-1)
-	if q := r.URL.Query().Get("since"); q != "" {
-		if n, err := strconv.ParseInt(q, 10, 64); err == nil {
+	if le := r.Header.Get("Last-Event-ID"); le != "" {
+		if n, err := strconv.ParseInt(le, 10, 64); err == nil {
 			since = n
 		}
-	} else if le := r.Header.Get("Last-Event-ID"); le != "" {
-		if n, err := strconv.ParseInt(le, 10, 64); err == nil {
+	} else if q := r.URL.Query().Get("since"); q != "" {
+		if n, err := strconv.ParseInt(q, 10, 64); err == nil {
 			since = n
 		}
 	}
 
 	cur := st.Version()
 	// Randomised retry spreads reconnects after a restart (no thundering herd).
-	hello := fmt.Sprintf("retry: %d\nid: %d\nevent: hello\ndata: {\"v\":%d,\"now\":%d}\n\n", 2000+rand.IntN(4000), cur, cur, time.Now().Unix())
+	// "hello" deliberately has no id: the browser's Last-Event-ID must only ever
+	// advance when a real change event was delivered, never past a catch-up the
+	// client has not received yet.
+	hello := fmt.Sprintf("retry: %d\nevent: hello\ndata: {\"v\":%d,\"now\":%d}\n\n", 2000+rand.IntN(4000), cur, time.Now().Unix())
 	if !write([]byte(hello)) {
 		return
 	}

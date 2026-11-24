@@ -107,6 +107,7 @@
   var viewBox, navBox, viewerBox, nameBox;
   function start() {
     api('GET', 'me', null, { quiet: true }).then(function (me) {
+      if (!me.user) { showLogin(); return; }
       S.user = me.user; S.settings = me.settings;
       app.textContent = '';
       nameBox = h('h1', { text: S.settings.name });

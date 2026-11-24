@@ -1,0 +1,6 @@
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy pricetag:8080 {
+		flush_interval -1          # never buffer: live price updates are a stream
+	}
+}

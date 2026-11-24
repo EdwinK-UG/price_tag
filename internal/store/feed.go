@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha1"
 	"database/sql"
@@ -498,4 +500,34 @@ func (s *Store) Home(ctx context.Context) (*HomeSnapshot, error) {
 	}
 	s.homeMu.Unlock()
 	return snap, nil
+}
+
+// FullCatalogGzip returns the whole catalogue as gzip'd NDJSON (the format
+// StreamCatalog emits for since=0), built once per data version. Many phones
+// downloading the same version cost one build, not one each. The slice is
+// shared and read-only.
+func (s *Store) FullCatalogGzip(ctx context.Context) ([]byte, error) {
+	s.catMu.Lock()
+	defer s.catMu.Unlock()
+	if s.catGz != nil && s.catV == s.v.Load() {
+		return s.catGz, nil
+	}
+	var buf bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&buf, 6)
+	enc := json.NewEncoder(zw)
+	var hdr CatalogHeader
+	err := s.StreamCatalog(ctx, 0, func(v any) error {
+		if h, ok := v.(CatalogHeader); ok {
+			hdr = h
+		}
+		return enc.Encode(v)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	s.catGz, s.catV = buf.Bytes(), hdr.V
+	return s.catGz, nil
 }

@@ -115,6 +115,10 @@ type Store struct {
 	homeCache *HomeSnapshot
 
 	tokenSeen sync.Map // api token id -> last_used write time (throttle)
+
+	catMu sync.Mutex // cached gzip of the full catalogue at version catV
+	catV  int64
+	catGz []byte
 }
 
 const schemaSQL = `
@@ -189,7 +193,9 @@ func dsn(path string, readOnly bool) string {
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "synchronous(NORMAL)")
+	// FULL: an acknowledged price edit survives a power cut (shops often have no UPS).
+	// Writes are rare and small, so the extra fsync is a few milliseconds.
+	q.Add("_pragma", "synchronous(FULL)")
 	q.Add("_pragma", "foreign_keys(1)")
 	if readOnly {
 		q.Add("_pragma", "query_only(1)")
@@ -550,7 +556,16 @@ func (s *Store) Backup(ctx context.Context, dst string) error {
 		return err
 	}
 	defer db.Close()
-	_, err = db.ExecContext(ctx, `VACUUM INTO ?`, dst)
+	if _, err = db.ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
+		return err
+	}
+	// Never ship live login sessions inside a copy that gets e-mailed around.
+	cp, err := sql.Open("sqlite", dsn(dst, false))
+	if err != nil {
+		return err
+	}
+	defer cp.Close()
+	_, err = cp.ExecContext(ctx, `DELETE FROM sessions`)
 	return err
 }
 

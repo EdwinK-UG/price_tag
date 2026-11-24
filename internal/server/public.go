@@ -124,6 +124,17 @@ func (s *Server) catalog(w http.ResponseWriter, r *http.Request, st *store.Store
 	h.Set("Content-Type", "application/x-ndjson; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
 	h.Add("Vary", "Accept-Encoding")
+	if since <= 0 && acceptsGzip(r) { // a full download: built once per version, shared by every phone
+		gz, err := st.FullCatalogGzip(r.Context())
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		h.Set("Content-Encoding", "gzip")
+		h.Set("Content-Length", strconv.Itoa(len(gz)))
+		w.Write(gz)
+		return
+	}
 	var out interface {
 		Write([]byte) (int, error)
 	} = w

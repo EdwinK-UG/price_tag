@@ -1,0 +1,30 @@
+# Production-style setup: the app behind Caddy, which gets and renews the HTTPS
+# certificate by itself. Phones need HTTPS to use the camera.
+#
+#   1. point your domain's DNS at this machine
+#   2. create deploy/.env with:   DOMAIN=prices.example.com   OPERATOR_TOKEN=<24+ random characters>
+#   3. docker compose -f deploy/docker-compose.yml up -d
+services:
+  pricetag:
+    build: ..
+    restart: unless-stopped
+    environment:
+      PRICETAG_TRUST_PROXY: "1"            # we are behind Caddy: use its X-Forwarded-* headers
+      PRICETAG_OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN in deploy/.env}
+    volumes:
+      - pricetag-data:/data                # one .db file per store: this is what you back up
+    ulimits:
+      nofile: 65536                        # one file handle per connected phone
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [pricetag]
+volumes:
+  pricetag-data:
+  caddy-data:

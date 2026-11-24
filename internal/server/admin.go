@@ -77,7 +77,7 @@ func (s *Server) adminRoutes() {
 	p := "/api/v1/s/{slug}/admin/"
 	m.HandleFunc("POST "+p+"login", s.login)
 	m.HandleFunc("POST "+p+"logout", s.logout)
-	m.HandleFunc("GET "+p+"me", s.admin("", s.me))
+	m.HandleFunc("GET "+p+"me", s.whoami)
 	m.HandleFunc("POST "+p+"password", s.admin("", s.changePassword))
 	m.HandleFunc("GET "+p+"stats", s.admin("", func(w http.ResponseWriter, r *http.Request, st *store.Store, u *store.User) {
 		sts, err := st.Stats(r.Context())
@@ -125,7 +125,8 @@ func (s *Server) adminRoutes() {
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	ip := s.clientIP(r)
-	if !s.limit(w, s.rlLogin, slug+"|"+ip) {
+	ipKey := slug + "|" + ip
+	if !s.limit(w, s.rlLogin, ipKey) {
 		return
 	}
 	if !sameOrigin(r) || r.Header.Get("X-PT-CSRF") != "1" {
@@ -136,7 +137,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in, 4<<10) {
 		return
 	}
-	if !s.limit(w, s.rlAccount, slug+"|"+strings.ToLower(strings.TrimSpace(in.Email))) {
+	acctKey := slug + "|" + strings.ToLower(strings.TrimSpace(in.Email))
+	if !s.limit(w, s.rlAccount, acctKey) {
 		return
 	}
 	st, rel, err := s.reg.Acquire(slug)
@@ -155,6 +157,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.rlLogin.refund(ipKey) // only failures count against the throttles
+	s.rlAccount.refund(acctKey)
 	tok, exp, err := st.CreateSession(r.Context(), u.ID)
 	if err != nil {
 		s.fail(w, r, err)
@@ -180,7 +184,25 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, 200, map[string]bool{"ok": true})
 }
 
-func (s *Server) me(w http.ResponseWriter, r *http.Request, st *store.Store, u *store.User) {
+// whoami answers 200 either way ({"user":null} when signed out) so a signed-out
+// visit to the admin page is not logged as an error in the browser console.
+func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
+	if !s.limit(w, s.rlAdmin, s.clientIP(r)) {
+		return
+	}
+	slug := r.PathValue("slug")
+	st, rel, err := s.reg.Acquire(slug)
+	if err != nil {
+		writeErr(w, 404, "no_such_store", "this store does not exist")
+		return
+	}
+	defer rel()
+	w.Header().Set("Cache-Control", "no-store")
+	u, err := st.SessionUser(r.Context(), s.sessionCookie(r, slug))
+	if err != nil {
+		writeJSON(w, r, 200, map[string]any{"user": nil})
+		return
+	}
 	writeJSON(w, r, 200, map[string]any{"user": u, "settings": st.Settings(), "version": st.Version()})
 }
 

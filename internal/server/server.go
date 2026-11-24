@@ -130,11 +130,17 @@ func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", csp)
-		h.Set("Permissions-Policy", "camera=(self), geolocation=(), microphone=(), payment=()")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		// The heavy document-level headers only matter for HTML pages. Leaving them
+		// off JSON/asset responses saves ~500 bytes on every price lookup, which is
+		// real money on a prepaid data bundle.
+		p := r.URL.Path
+		if !strings.HasPrefix(p, "/api/") && !strings.HasPrefix(p, "/static/") {
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Content-Security-Policy", csp)
+			h.Set("Permissions-Policy", "camera=(self), geolocation=(), microphone=(), payment=()")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		}
 		if s.isTLS(r) {
 			h.Set("Strict-Transport-Security", "max-age=31536000")
 		}

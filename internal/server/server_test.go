@@ -284,9 +284,18 @@ func TestPublicAPI(t *testing.T) {
 	if res, _ = c.do("GET", "/api/v1/s/shop/home", nil, map[string]string{"If-None-Match": etag}); res.StatusCode != 304 {
 		t.Fatalf("home 304: %d", res.StatusCode)
 	}
-	for _, h := range []string{"Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options"} {
-		if res.Header.Get(h) == "" {
-			t.Errorf("missing security header %s", h)
+	if res.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("API responses need nosniff")
+	}
+	if res.Header.Get("Content-Security-Policy") != "" {
+		t.Error("API responses should stay lean: CSP belongs on HTML pages only")
+	}
+	for _, page := range []string{"/s/shop/", "/s/shop/admin/", "/"} {
+		pr, _ := c.get(page)
+		for _, h := range []string{"Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options"} {
+			if pr.Header.Get(h) == "" {
+				t.Errorf("%s: missing security header %s", page, h)
+			}
 		}
 	}
 }
@@ -395,8 +404,11 @@ func TestAdminAuthAndCSRF(t *testing.T) {
 	e := newEnv(t)
 	seed(t, e)
 	c := e.client()
-	if res, _ := c.get("/api/v1/s/shop/admin/me"); res.StatusCode != 401 {
-		t.Fatalf("unauthenticated: %d", res.StatusCode)
+	if res, b := c.get("/api/v1/s/shop/admin/me"); res.StatusCode != 200 || !strings.Contains(string(b), `"user":null`) {
+		t.Fatalf("signed-out me should be 200 with a null user: %d %s", res.StatusCode, b)
+	}
+	if res, _ := c.get("/api/v1/s/shop/admin/stats"); res.StatusCode != 401 {
+		t.Fatalf("unauthenticated admin endpoint: %d", res.StatusCode)
 	}
 	if res, _ := c.put("/api/v1/s/shop/admin/products/"+raw("600123456789")+"/price", map[string]int64{"price": 1}); res.StatusCode != 401 {
 		t.Fatalf("unauthenticated write: %d", res.StatusCode)
@@ -432,8 +444,11 @@ func TestAdminAuthAndCSRF(t *testing.T) {
 	}
 	// logout kills the session server-side
 	admin.post("/api/v1/s/shop/admin/logout", nil)
-	if res, _ := admin.get("/api/v1/s/shop/admin/me"); res.StatusCode != 401 {
-		t.Fatal("session survived logout")
+	if _, b := admin.get("/api/v1/s/shop/admin/me"); !strings.Contains(string(b), `"user":null`) {
+		t.Fatalf("session survived logout: %s", b)
+	}
+	if res, _ := admin.get("/api/v1/s/shop/admin/stats"); res.StatusCode != 401 {
+		t.Fatal("admin API still open after logout")
 	}
 }
 
@@ -648,7 +663,7 @@ func TestOperatorAPI(t *testing.T) {
 	if res, b := cc.post("/api/v1/s/fresh-mart/admin/login", map[string]string{"email": "boss@fresh.example", "password": out.OwnerPassword}); res.StatusCode != 200 {
 		t.Fatalf("owner login: %d %s", res.StatusCode, b)
 	}
-	if res, _ := cc.get("/api/v1/s/shop/admin/me"); res.StatusCode != 401 {
+	if res, _ := cc.get("/api/v1/s/shop/admin/stats"); res.StatusCode != 401 {
 		t.Fatal("session for one store must not work on another")
 	}
 	_, lb := c.do("GET", "/api/v1/operator/stores", nil, auth)
@@ -710,6 +725,16 @@ func TestPerAccountThrottle(t *testing.T) {
 	}
 }
 
+func TestSuccessfulLoginsDoNotCountAgainstThrottle(t *testing.T) {
+	e := newEnv(t)
+	for i := 0; i < 25; i++ { // a shop with many devices signing in
+		c := e.client()
+		if res, b := c.post("/api/v1/s/shop/admin/login", map[string]string{"email": "owner@example.com", "password": "owner-pass-123"}); res.StatusCode != 200 {
+			t.Fatalf("login %d: %d %s", i, res.StatusCode, b)
+		}
+	}
+}
+
 func TestCatalogStream(t *testing.T) {
 	e := newEnv(t)
 	seed(t, e)
@@ -731,6 +756,31 @@ func TestCatalogStream(t *testing.T) {
 	}
 	if len(lines) != 4 || !strings.Contains(lines[0], `"full":true`) || !strings.Contains(lines[3], `"end":true`) {
 		t.Fatalf("catalog: %v", lines)
+	}
+}
+
+func TestFullCatalogIsCachedPerVersion(t *testing.T) {
+	e := newEnv(t)
+	seed(t, e)
+	st, rel, _ := e.srv.reg.Acquire("shop")
+	defer rel()
+	a, err := st.FullCatalogGzip(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := st.FullCatalogGzip(context.Background())
+	if &a[0] != &b[0] {
+		t.Fatal("same version must reuse the built catalogue")
+	}
+	st.SetPrice(context.Background(), "t", code("600123456789"), 5600)
+	c, _ := st.FullCatalogGzip(context.Background())
+	if &a[0] == &c[0] {
+		t.Fatal("a new version must rebuild")
+	}
+	zr, _ := gzip.NewReader(bytes.NewReader(c))
+	body, _ := io.ReadAll(zr)
+	if !bytes.Contains(body, []byte(`"price":5600`)) {
+		t.Fatalf("stale catalogue: %s", body)
 	}
 }
 

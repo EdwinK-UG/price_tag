@@ -1,0 +1,17 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - run: make build
+      - run: cd tests && npm install --no-audit --no-fund && npx playwright install --with-deps chromium && sudo apt-get install -y imagemagick
+      - run: make test-js
+      - run: make test-e2e

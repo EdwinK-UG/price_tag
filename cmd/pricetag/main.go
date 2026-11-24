@@ -118,13 +118,18 @@ func cmdServe(args []string) error {
 	keyF := fs.String("tls-key", "", "TLS key file")
 	devTLS := fs.Bool("dev-tls", false, "serve HTTPS with a throw-away self-signed certificate (lets a phone use the camera on your LAN)")
 	jsonLog := fs.Bool("json-log", false, "JSON log lines")
+	pubRPS := fs.Float64("public-rps", 50, "per-IP request rate for shopper endpoints (many phones share one carrier IP: keep generous)")
+	pubBurst := fs.Int("public-burst", 200, "per-IP burst for shopper endpoints")
+	sseStore := fs.Int("max-sse-per-store", 20000, "most live connections per store")
+	sseIP := fs.Int("max-sse-per-ip", 100, "most live connections per client IP")
 	fs.Parse(args)
 
 	log := newLogger(*jsonLog)
 	if err := os.MkdirAll(*data, 0o750); err != nil {
 		return err
 	}
-	srv, err := server.New(server.Config{DataDir: *data, TrustProxy: *trust, OperatorToken: os.Getenv("PRICETAG_OPERATOR_TOKEN"), AccessLog: *access, Logger: log})
+	srv, err := server.New(server.Config{DataDir: *data, TrustProxy: *trust, OperatorToken: os.Getenv("PRICETAG_OPERATOR_TOKEN"), AccessLog: *access, Logger: log,
+		PublicRPS: *pubRPS, PublicBurst: *pubBurst, MaxSSEPerStore: *sseStore, MaxSSEPerIP: *sseIP})
 	if err != nil {
 		return err
 	}

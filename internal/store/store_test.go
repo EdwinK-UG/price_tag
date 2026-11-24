@@ -689,6 +689,28 @@ func TestBackup(t *testing.T) {
 	if err := s.Backup(ctx, dst); err == nil {
 		t.Fatal("must not overwrite")
 	}
+	// backups must not carry live sessions
+	if _, err := s.Authenticate(ctx, "owner@example.com", "owner-pass-123"); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := s.Authenticate(ctx, "owner@example.com", "owner-pass-123")
+	s.CreateSession(ctx, u.ID)
+	dst2 := filepath.Join(t.TempDir(), "withsession.db")
+	if err := s.Backup(ctx, dst2); err != nil {
+		t.Fatal(err)
+	}
+	dir2 := filepath.Dir(dst2)
+	os.Rename(dst2, filepath.Join(dir2, "wscopy.db"))
+	ws, err := Open(dir2, "wscopy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	ws.r.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n)
+	ws.Close()
+	if n != 0 {
+		t.Fatalf("backup contains %d live sessions", n)
+	}
 	dir := filepath.Dir(dst)
 	os.Rename(dst, filepath.Join(dir, "copy.db"))
 	b, err := Open(dir, "copy")

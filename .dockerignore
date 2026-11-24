@@ -1,0 +1,7 @@
+.git
+bin
+data
+tests/node_modules
+tests/e2e/fixtures
+tests/e2e/.artifacts
+*.db

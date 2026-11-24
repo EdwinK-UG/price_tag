@@ -1,0 +1,26 @@
+# Alternative to Docker: run the binary under systemd.
+#   sudo useradd --system --home /var/lib/pricetag pricetag
+#   sudo install -m 0755 bin/pricetag /usr/local/bin/pricetag
+#   sudo install -m 0644 deploy/pricetag.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pricetag
+[Unit]
+Description=Price Tag shop price service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pricetag
+StateDirectory=pricetag
+Environment=PRICETAG_DATA=/var/lib/pricetag PRICETAG_ADDR=127.0.0.1:8080 PRICETAG_TRUST_PROXY=1
+# EnvironmentFile=/etc/pricetag.env     (put PRICETAG_OPERATOR_TOKEN=... in here, chmod 600)
+ExecStart=/usr/local/bin/pricetag serve
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

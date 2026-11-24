@@ -1,0 +1,10 @@
+/bin/
+/data/
+*.db
+*.db-wal
+*.db-shm
+node_modules/
+e2e/.artifacts/
+e2e/fixtures/*.mjpeg
+coverage.out
+.DS_Store

@@ -40,7 +40,7 @@ Each cached item has `chk` (the version it was verified at). It is shown **witho
 An offer carries `from`/`to`. The phone compares with the *server's* clock (corrected from the `Date` header, so a wrong phone clock does not matter) and schedules one timer for the next start/end. So an offer starting at 18:00 or ending at midnight needs **no** network message, and works offline. The effective price is `min(base, best running offer)`: a "deal" that costs more than the normal price is never shown.
 
 **Small, boring client.**
-Plain ES2017 (runs on Chrome 58+), no framework, no build step, DOM built with `textContent` (never `innerHTML`). The shell paints from HTML + the last saved home page before any network call; the service worker serves it offline. The scanner (6 KB gz) loads only when "Scan" is tapped.
+Plain ES2017 (runs on Chrome 58+), no framework, no build step, DOM built with `textContent` (never `innerHTML`). The shell paints from HTML + the last saved home page before any network call; the service worker serves it offline. The scanner (6.5 KB gz) loads only when "Scan" is tapped, and the shopping cart (`web/shopper/cart.js` + `cart.css`, 5.4 KB gz) loads only when the shopper adds an item or opens the cart (or reloads with a non-empty cart). Cart state lives per shop in `localStorage` (`pt:<slug>:cart`), uses integer minor units and the same effective-price / offer-boundary logic, reprices live on SSE changes and `reset` revalidation, labels offline prices with their saved age and an outdated-total warning, and excludes unknown/unlisted items with a warning.
 
 **Barcode scanning has three tiers.**
 1. the browser's native `BarcodeDetector` (Chrome on most Android phones: fast, zero download);

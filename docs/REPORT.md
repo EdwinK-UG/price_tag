@@ -87,10 +87,11 @@ Lookup time on Slow 3G is almost entirely the 400 ms round trip (nothing left to
 
 ### 4.5 Quality gates
 
-* **Go**: 56 tests + 3 fuzzers (barcode canonical form 1.7 M executions, money 200 k, CSV 275 k, no failures), all under `-race`, `go vet` clean.
-* **JS unit**: 26 tests.
-* **Browser**: 47 tests, 0 console errors or CSP violations on any page.
-* Asset budgets enforced in CI-able tests: shopper app ≤ 16 KB gzipped (14.5), scanner ≤ 8 KB (6.5), code parses as **ES2017** (Chrome 58+).
+* **Go**: 58 tests + 3 fuzzers (barcode canonical form 1.7 M executions, money 200 k, CSV 275 k, no failures), all under `-race`, `go vet` clean.
+* **JS unit**: 32 tests (incl. 6 cart unit tests).
+* **Browser**: 53 tests (incl. 6 Stage 1 cart e2e tests), 0 console errors or CSP violations on any page.
+* Asset budgets enforced in CI-able tests: shopper app ≤ 16 KB gzipped (**15,911 B**, up from 14,506 B baseline before sync fixes & cart hook), lazy cart module ≤ 8 KB (**5,482 B** js+css, 0 B on cold first load), scanner ≤ 8 KB (6,462 B), code parses as **ES2017** (Chrome 58+).
+* **Stage 1 cart impact on Slow 3G + 6× CPU** (Chromium 1255, loopback): cold visit **18,313 B** (+1,408 B vs 16,905 B baseline, still 5 requests — `cart.js`/`cart.css` not fetched until used), FCP **1.20 s**, home visible **2.25 s** (baseline 2.18 s); lookup **1,077 ms / 406 B** (unchanged vs 1,075 ms / 406 B baseline); Fast 3G lookup **450 ms / 406 B** (baseline 474 ms / 406 B). **Not verified:** real phones, iOS Safari private mode `localStorage` quirks, or Stage 2/3 (not yet built).
 
 ## 5. Security review (my own; please re-check independently)
 

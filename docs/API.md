@@ -6,16 +6,17 @@ All paths are under one origin. `{slug}` is the shop's address. JSON everywhere 
 
 **Barcodes:** send EAN-8 / UPC-A / EAN-13 / GTIN-14 in any spelling; they are normalised to a 14-digit GTIN and the GS1 check digit must be valid (`400` `bad_code` otherwise). Other codes (`SUGAR-1KG`, `4011`) are accepted as the shop's own codes.
 
-## Shopper (public, read-only, rate-limited per IP)
+## Shopper (public, rate-limited per IP)
 
 | Method & path | Returns |
 |---|---|
-| `GET /api/v1/s/{slug}/home` | `{store:{slug,name,currency,decimals,tz_offset,announcement}, promos:[{id,title,text,from,to,items:[{code,name,size,price,promo_price}],more}], v}`. ETag; `304` when unchanged. Includes live **and upcoming (≤7 days)** offers; the client filters by time. |
+| `GET /api/v1/s/{slug}/home` | `{store:{slug,name,currency,decimals,tz_offset,announcement,checkout_enabled?}, promos:[{id,title,text,from,to,items:[{code,name,size,price,promo_price}],more}], v}`. ETag; `304` when unchanged. Includes live **and upcoming (≤7 days)** offers; the client filters by time. |
 | `GET /api/v1/s/{slug}/items/{code}` | `{code,name,size,category,price,promos:[{id,title,price,from,to}],rev}` (~200 bytes). `404 not_found` if not in the price list. `ETag: W/"<rev>"`, honours `If-None-Match` (→ `304`). Header `X-PT-V` = current shop version. |
 | `GET /api/v1/s/{slug}/search?q=` | `{items:[...]}` up to 20, by name/code fragment (≥2 chars). |
 | `GET /api/v1/s/{slug}/events[?since=V]` | `text/event-stream`, see below. |
 | `GET /api/v1/s/{slug}/catalog[?since=V]` | gzip NDJSON for the opt-in offline mode. Header `{"v","since","full","total"}`, then one item or `{"gone":code}` per line, then `{"end":true,"n":N}` (a missing end line = truncated download). Full downloads are built once per version and cached. |
 | `GET /api/v1/s/{slug}/sample?n=` | a few products, for the printable test sheet. |
+| `POST /api/v1/s/{slug}/checkouts` | Creates (or reuses via optional `prev_code` when unchanged) an anonymous cart snapshot and returns `201` `{code,created_at,expires_at,total,unknown_count,items:[{code,display,name,size,qty,price,line_total}]}`. Request: `{items:[{code,qty}], prev_code?}` (≤ 200 items, qty 1–999). `404` when `checkout_enabled` is off. Prices are always computed server-side; no shopper identity is stored. Rate-limited per IP per shop. |
 
 ### The live stream
 
@@ -57,8 +58,8 @@ curl -X POST -H "Authorization: Bearer ptk_…" -H "Content-Type: text/csv" \
 
 `POST …/admin/login {email,password}` → sets `pt_<slug>` cookie. `POST …/admin/logout`. `GET …/admin/me` → `{user:null}` when signed out (200). Rate limits count failed attempts only.
 
-Editors and owners: `GET …/admin/stats`, `GET/PUT/DELETE …/admin/products[/{code}]`, `PUT …/admin/products/{code}/price {price}`, `GET/POST …/admin/promos`, `GET/PUT/DELETE …/admin/promos/{id}`, `POST …/admin/import[?dry_run=1]`, `GET …/admin/export.csv`, `GET …/admin/history?kind=&ref=&before=&limit=`, `GET …/admin/settings`, `POST …/admin/password {current,new}`.
-Owners only: `PUT …/admin/settings`, `GET/POST/PATCH …/admin/users`, `GET/POST/DELETE …/admin/tokens`, `GET …/admin/export.db` (the whole shop as a SQLite file).
+Editors and owners: `GET …/admin/stats`, `GET/PUT/DELETE …/admin/products[/{code}]`, `PUT …/admin/products/{code}/price {price}`, `GET/POST …/admin/promos`, `GET/PUT/DELETE …/admin/promos/{id}`, `GET …/admin/checkouts/{code}` (re-checks live prices against the snapshot; returns `404` identically for invalid/missing/expired codes, `409` if already verified; failed lookups are throttled per IP and per shop, successful lookups are refunded), `POST …/admin/checkouts/{code}/verify {mode?}` (marks the code `verified` once, prevents reuse, logs actor/time in `history`), `POST …/admin/import[?dry_run=1]`, `GET …/admin/export.csv`, `GET …/admin/history?kind=&ref=&before=&limit=`, `GET …/admin/settings`, `POST …/admin/password {current,new}`.
+Owners only: `PUT …/admin/settings` (also configures `checkout_enabled` default `false`, `checkout_ttl_min` 5–1440 default `180`, `checkout_default_mode` `"tick"` | `"rescan"`), `GET/POST/PATCH …/admin/users`, `GET/POST/DELETE …/admin/tokens`, `GET …/admin/export.db` (the whole shop as a SQLite file).
 
 Offer body: `{title,text,starts_at,ends_at,enabled,items:[{code,price}]}` (times in Unix seconds). Rules: ends after starts; ≤ 1 year; ≤ 500 products; each product must exist and the offer price must be **lower** than its normal price.
 

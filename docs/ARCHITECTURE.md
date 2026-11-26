@@ -40,7 +40,7 @@ Each cached item has `chk` (the version it was verified at). It is shown **witho
 An offer carries `from`/`to`. The phone compares with the *server's* clock (corrected from the `Date` header, so a wrong phone clock does not matter) and schedules one timer for the next start/end. So an offer starting at 18:00 or ending at midnight needs **no** network message, and works offline. The effective price is `min(base, best running offer)`: a "deal" that costs more than the normal price is never shown.
 
 **Small, boring client.**
-Plain ES2017 (runs on Chrome 58+), no framework, no build step, DOM built with `textContent` (never `innerHTML`). The shell paints from HTML + the last saved home page before any network call; the service worker serves it offline. The scanner (6.5 KB gz) loads only when "Scan" is tapped, and the shopping cart (`web/shopper/cart.js` + `cart.css`, 5.4 KB gz) loads only when the shopper adds an item or opens the cart (or reloads with a non-empty cart). Cart state lives per shop in `localStorage` (`pt:<slug>:cart`), uses integer minor units and the same effective-price / offer-boundary logic, reprices live on SSE changes and `reset` revalidation, labels offline prices with their saved age and an outdated-total warning, and excludes unknown/unlisted items with a warning.
+Plain ES2017 (runs on Chrome 58+), no framework, no build step, DOM built with `textContent` (never `innerHTML`). The shell paints from HTML + the last saved home page before any network call; the service worker serves it offline. The scanner (6.5 KB gz) loads only when "Scan" is tapped, and the shopping cart (`web/shopper/cart.js` + `cart.css`, ~7 KB gz) loads only when the shopper adds an item or opens the cart (or reloads with a non-empty cart). Cart state lives per shop in `localStorage` (`pt:<slug>:cart`), uses integer minor units and the same effective-price / offer-boundary logic, reprices live on SSE changes and `reset` revalidation, labels offline prices with their saved age and an outdated-total warning, and excludes unknown/unlisted items with a warning. When a shop switches on checkout codes (`checkout_enabled`, off by default), tapping **Checkout** turns the cart into a 6-character code + QR; the vendored QR generator (`qrcode-generator-1.4.4.js`, 11.7 KB gz, immutable cache) is lazy-loaded only on that tap so shops without checkout pay 0 bytes.
 
 **Barcode scanning has three tiers.**
 1. the browser's native `BarcodeDetector` (Chrome on most Android phones: fast, zero download);
@@ -53,7 +53,9 @@ Shops are files in the data directory; a slug is the filename (validated `^[a-z0
 
 ## Data model (per shop)
 
-`products(code PK, name, size, category, price INTEGER, deleted, rev, updated_at)` · `promotions` + `promo_items(promo_id, code, price)` · `users` · `sessions` (token hash) · `api_tokens` (token hash) · `history` (who changed what, old → new price) · `meta` (version `v`, `home_rev`, `purged_before`, settings JSON).
+Schema version 2 (upgraded automatically in a transaction on open via sequential migrations in `store.migrate()`):
+`products(code PK, name, size, category, price INTEGER, deleted, rev, updated_at)` · `promotions` + `promo_items(promo_id, code, price)` · `checkouts(code PK, created_at, expires_at, status, snapshot_total, verified_at, verified_by, verify_mode)` + `checkout_items(code, seq, barcode, display_code, name, size, qty, snapshot_price)` · `users` · `sessions` (token hash) · `api_tokens` (token hash) · `history` (who changed what, old → new price, verified checkouts) · `meta` (version `v`, `home_rev`, `purged_before`, settings JSON).
+Checkout rows store **no shopper identity** (no name, phone, account, IP, or device ID). Codes are 6 characters from a 31-character unambiguous alphabet (`23456789ABCDEFGHJKMNPQRSTUVWXYZ`, no `0/O/1/I/L`, ~887 M combinations) generated via `crypto/rand` rejection sampling. Expired `open` checkouts are purged opportunistically and during compaction; `verified` rows are retained for audit history.
 Prices are **integers in the currency's minor unit** (UGX has none, so it is just shillings; `decimals` is stored per shop and locked once products exist).
 Codes are normalised (`internal/barcode`): EAN-8/UPC-A/EAN-13/GTIN-14 → 14-digit GTIN with a **verified check digit**, so a UPC-A scan and its EAN-13 spelling hit the same row, and a camera misread is rejected on the phone. Anything else (a shop's own short codes, produce PLUs) is an "internal" code.
 
@@ -69,10 +71,10 @@ Codes are normalised (`internal/barcode`): EAN-8/UPC-A/EAN-13/GTIN-14 → 14-dig
 * Passwords: argon2id (OWASP minimum parameters), hashing concurrency-limited. Sessions: 256-bit random tokens, only the SHA-256 stored, `HttpOnly`, `SameSite=Strict`, `Secure` behind TLS, 14-day sliding expiry; disabling a user or changing a password signs them out everywhere.
 * CSRF: custom header **and** same-origin check on every state-changing admin request.
 * Integration keys: scoped to *push products only*, stored hashed, shown once, revocable, rate-limited.
-* Roles: `owner` (everything) and `editor` (prices, products, offers). The last active owner cannot be removed.
-* Public API is read-only and rate-limited per IP **sized for a shop's shared Wi-Fi IP**; login throttles count only *failed* attempts.
+* Roles: `owner` (everything) and `editor` (prices, products, offers, till checkout verification). The last active owner cannot be removed.
+* Public API is rate-limited per IP **sized for a shop's shared Wi-Fi IP**; login throttles count only *failed* attempts. Checkout code creation is rate-limited per IP per shop (with a per-shop cap of 5 000 open codes); cashier code lookups are throttled per IP and per shop on *failed* lookups (valid lookups are refunded), and invalid/missing/expired codes return byte-identical `404` responses so codes cannot be enumerated or guessed.
 * CSP `default-src 'self'`, no inline script/style, no `eval`; all server text is inserted as text.
-* Every price/offer change is recorded in `history` with the actor.
+* Every price/offer change and checkout verification is recorded in `history` with the actor.
 * Database exports/backups drop live session rows.
 
 ## What is deliberately *not* in the design

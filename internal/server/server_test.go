@@ -838,3 +838,54 @@ func TestManyConcurrentLookups(t *testing.T) {
 		t.Error(m)
 	}
 }
+
+func TestPromoChangesInvalidateItemETag(t *testing.T) {
+	e := newEnv(t)
+	a, _ := seed(t, e)
+	c := e.client()
+	adm := e.adminClient("owner@example.com", "owner-pass-123")
+
+	res, _ := c.get("/api/v1/s/shop/items/" + a)
+	etag0 := res.Header.Get("ETag")
+	if res.StatusCode != 200 || etag0 == "" {
+		t.Fatalf("initial lookup: %d %q", res.StatusCode, etag0)
+	}
+
+	now := time.Now().Unix()
+	pr, pb := adm.post("/api/v1/s/shop/admin/promos", map[string]any{
+		"title": "Deal", "starts_at": now - 60, "ends_at": now + 3600, "enabled": true,
+		"items": []map[string]any{{"code": a, "price": 4900}},
+	})
+	if pr.StatusCode != 201 {
+		t.Fatalf("create promo: %d %s", pr.StatusCode, pb)
+	}
+	var pid struct{ ID int64 }
+	decode(t, pb, &pid)
+
+	// Revalidating with old ETag must return 200 (not stale 304) with the new offer.
+	res, body := c.do("GET", "/api/v1/s/shop/items/"+a, nil, map[string]string{"If-None-Match": etag0})
+	if res.StatusCode != 200 {
+		t.Fatalf("want 200 after promo create, got %d", res.StatusCode)
+	}
+	var it store.Item
+	decode(t, body, &it)
+	if len(it.Promos) != 1 || it.Promos[0].Price != 4900 {
+		t.Fatalf("expected promo on item: %+v", it)
+	}
+	etag1 := res.Header.Get("ETag")
+
+	// Deleting promo must also invalidate ETag.
+	dr, _ := adm.do("DELETE", fmt.Sprintf("/api/v1/s/shop/admin/promos/%d", pid.ID), nil, map[string]string{"X-PT-CSRF": "1"})
+	if dr.StatusCode != 200 {
+		t.Fatalf("delete promo: %d", dr.StatusCode)
+	}
+	res, body = c.do("GET", "/api/v1/s/shop/items/"+a, nil, map[string]string{"If-None-Match": etag1})
+	if res.StatusCode != 200 {
+		t.Fatalf("want 200 after promo delete, got %d", res.StatusCode)
+	}
+	it = store.Item{}
+	decode(t, body, &it)
+	if len(it.Promos) != 0 {
+		t.Fatalf("expected promo removed: %+v", it)
+	}
+}

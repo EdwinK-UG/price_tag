@@ -233,17 +233,34 @@ func (s *Store) Search(ctx context.Context, q string, limit int) ([]*Item, error
 // offline (or whose connection dropped) is brought up to date in one message.
 // It returns nil when the client is already current.
 func (s *Store) CatchUp(ctx context.Context, since int64) (*Event, error) {
-	cur := s.v.Load()
+	tx, err := s.r.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var raw string
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='v'`).Scan(&raw); err != nil {
+		return nil, err
+	}
+	cur, _ := strconv.ParseInt(raw, 10, 64)
 	if since == cur {
 		return nil, nil
 	}
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='purged_before'`).Scan(&raw); err != nil {
+		return nil, err
+	}
+	purged, _ := strconv.ParseInt(raw, 10, 64)
 	ev := &Event{Prev: since, V: cur}
-	if since > cur || since < s.purged.Load() || since < 0 {
+	if since > cur || since < purged || since < 0 {
 		ev.Reset, ev.Home = true, true
 		return ev, nil
 	}
-	ev.Home = s.homeRev.Load() > since
-	rows, err := s.r.QueryContext(ctx, `SELECT code FROM products WHERE rev>? LIMIT ?`, since, MaxInline+1)
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='home_rev'`).Scan(&raw); err != nil {
+		return nil, err
+	}
+	homeRev, _ := strconv.ParseInt(raw, 10, 64)
+	ev.Home = homeRev > since
+	rows, err := tx.QueryContext(ctx, `SELECT code FROM products WHERE rev>? LIMIT ?`, since, MaxInline+1)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +281,7 @@ func (s *Store) CatchUp(ctx context.Context, since int64) (*Event, error) {
 		ev.Reset, ev.Home = true, true
 		return ev, nil
 	}
-	ev.Items, ev.Gone, err = itemsFor(ctx, s.r, codes, time.Now().Unix())
+	ev.Items, ev.Gone, err = itemsFor(ctx, tx, codes, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}

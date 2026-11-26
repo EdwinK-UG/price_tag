@@ -816,6 +816,63 @@ func TestSecondProcessCannotDuplicateVersions(t *testing.T) {
 	}
 }
 
+func TestPromoChangesBumpProductRevForCatchUpAndCatalog(t *testing.T) {
+	s := newStore(t)
+	a := put(t, s, code("600123456789"), "Sugar", 5500)
+	b := put(t, s, code("600123456796"), "Rice", 4000)
+	v0 := s.Version()
+	it0, _ := s.Lookup(ctx, a)
+
+	now := time.Now().Unix()
+	pid, err := s.CreatePromo(ctx, "t", PromoInput{
+		Title: "Promo", StartsAt: now - 60, EndsAt: now + 3600, Enabled: true,
+		Items: []PromoItemInput{{Code: a, Price: 4800}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it1, _ := s.Lookup(ctx, a)
+	if it1.Rev <= it0.Rev {
+		t.Fatalf("CreatePromo did not bump product rev: %d -> %d", it0.Rev, it1.Rev)
+	}
+	ev, err := s.CatchUp(ctx, v0)
+	if err != nil || ev == nil || len(ev.Items) != 1 || ev.Items[0].Code != a || len(ev.Items[0].Promos) != 1 {
+		t.Fatalf("CatchUp missed created promo: %+v %v", ev, err)
+	}
+	var deltaCodes []string
+	if err := s.StreamCatalog(ctx, v0, func(v any) error {
+		if it, ok := v.(*Item); ok {
+			deltaCodes = append(deltaCodes, it.Code)
+		}
+		return nil
+	}); err != nil || len(deltaCodes) != 1 || deltaCodes[0] != a {
+		t.Fatalf("StreamCatalog delta missed created promo: %v %v", deltaCodes, err)
+	}
+
+	// Update promo to move from a to b: both a (removed) and b (added) must appear in CatchUp.
+	v1 := s.Version()
+	if err := s.UpdatePromo(ctx, "t", pid, PromoInput{
+		Title: "Promo2", StartsAt: now - 60, EndsAt: now + 3600, Enabled: true,
+		Items: []PromoItemInput{{Code: b, Price: 3500}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev2, err := s.CatchUp(ctx, v1)
+	if err != nil || ev2 == nil || len(ev2.Items) != 2 {
+		t.Fatalf("CatchUp missed updated promo items: %+v %v", ev2, err)
+	}
+
+	// Delete promo: b must appear in CatchUp with no promos.
+	v2 := s.Version()
+	if err := s.DeletePromo(ctx, "t", pid); err != nil {
+		t.Fatal(err)
+	}
+	ev3, err := s.CatchUp(ctx, v2)
+	if err != nil || ev3 == nil || len(ev3.Items) != 1 || ev3.Items[0].Code != b || len(ev3.Items[0].Promos) != 0 {
+		t.Fatalf("CatchUp missed deleted promo: %+v %v", ev3, err)
+	}
+}
+
 func BenchmarkLookup(b *testing.B) {
 	s := newStore(b)
 	var rows []ImportRow

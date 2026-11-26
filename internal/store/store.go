@@ -377,14 +377,15 @@ func (s *Store) Settings() Settings { return *s.settings.Load() }
 // ---- write transactions -------------------------------------------------
 
 type txc struct {
-	ctx     context.Context
-	tx      *sql.Tx
-	v       int64 // the version this transaction will become
-	now     int64
-	actor   string
-	touched map[string]struct{}
-	home    bool
-	stmts   map[string]*sql.Stmt
+	ctx      context.Context
+	tx       *sql.Tx
+	v        int64 // the version this transaction will become
+	now      int64
+	actor    string
+	touched  map[string]struct{}
+	home     bool
+	stmts    map[string]*sql.Stmt
+	onCommit func()
 }
 
 func (c *txc) touch(code string) { c.touched[code] = struct{}{} }
@@ -473,10 +474,13 @@ func (s *Store) write(ctx context.Context, actor string, dry bool, fn func(*txc)
 		return nil, err
 	}
 	done = true
-	s.v.Store(c.v)
+	if c.onCommit != nil {
+		c.onCommit()
+	}
 	if c.home {
 		s.homeRev.Store(c.v)
 	}
+	s.v.Store(c.v)
 	s.publish(ev)
 	return ev, nil
 }
@@ -511,12 +515,10 @@ func (s *Store) UpdateSettings(ctx context.Context, actor string, in Settings) e
 			return err
 		}
 		c.home = true
+		cp := in
+		c.onCommit = func() { s.settings.Store(&cp) }
 		return c.history("settings", "", "Store settings changed", nil, nil)
 	})
-	if err == nil {
-		cp := in
-		s.settings.Store(&cp)
-	}
 	return err
 }
 

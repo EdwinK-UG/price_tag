@@ -48,7 +48,12 @@
     open: null,                                           // code shown in the sheet
     es: null, backoff: 1500, hiddenAt: 0
   };
-  function saveMeta() { if (S.v != null) ls.set('v', S.v); ls.set('fresh', S.fresh); ls.set('full', S.full ? '1' : '0'); }
+  function saveMeta() {
+    if (S.v != null) ls.set('v', S.v);
+    var lf = +(ls.get('fresh') || 0);
+    if (S.fresh < lf && S.v != null && lf <= S.v) S.fresh = lf;
+    ls.set('fresh', S.fresh); ls.set('full', S.full ? '1' : '0');
+  }
   function store() { return (S.home && S.home.store) || { name: 'Price check', currency: 'UGX', decimals: 0, tz_offset: 180 }; }
 
   // ---- money & time ------------------------------------------------------------------------
@@ -312,11 +317,18 @@
     return getRaw('items/' + code, hdr, 15000).then(function (res) {
       var v = +res.headers.get('x-pt-v') || 0;
       if (res.status === 404) return 404;
-      if (res.status === 304 && cached) { cached.chk = Math.max(cached.chk || 0, v); cached.at = Date.now(); cache.put([cached]); return cached; }
+      if (res.status === 304 && cached) {
+        return cache.get(code).then(function (cur) {
+          if (cur && cur.rev > cached.rev) return cur;
+          cached.chk = Math.max(cached.chk || 0, v); cached.at = Date.now(); cache.put([cached]); return cached;
+        });
+      }
       if (!res.ok) throw new Error('item ' + res.status);
       return res.json().then(function (it) {
-        if (cached && cached.rev > it.rev) return cached;     // an event already brought something newer
-        it.chk = v; it.at = Date.now(); cache.put([it]); return it;
+        return cache.get(code).then(function (cur) {
+          if (cur && (cur.rev > it.rev || (cur.chk || 0) > v)) return cur; // an event already brought something newer
+          it.chk = v; it.at = Date.now(); cache.put([it]); return it;
+        });
       });
     });
   }
@@ -330,7 +342,11 @@
       var list = h('ul', { class: 'rows' });
       items.forEach(function (it) {
         var e = eff(it);
-        list.appendChild(h('li', null, h('button', { class: 'row', type: 'button', onclick: function () { it.chk = it.chk || 0; it.at = Date.now(); cache.put([it]); lookup(it.code, 'search'); } }, [
+        list.appendChild(h('li', null, h('button', { class: 'row', type: 'button', onclick: function () {
+          cache.get(it.code).then(function (cur) {
+            if (!cur || cur.rev < it.rev) { it.chk = it.chk || 0; it.at = Date.now(); return cache.put([it]); }
+          }).then(function () { lookup(it.code, 'search'); });
+        } }, [
           h('span', { class: 'n' }, [h('b', { text: it.name }), h('small', { text: it.size || '' })]),
           h('span', { class: 'p' + (e.promo ? ' deal' : ''), text: money(e.price) })
         ])));
@@ -349,7 +365,7 @@
       var d = JSON.parse(e.data); S.backoff = 1500;
       S.offset = d.now * 1000 - Date.now(); ls.set('offset', S.offset);
       if (S.v == null) { S.v = d.v; S.fresh = d.v; saveMeta(); }
-      S.live = true; paintStatus();
+      S.live = (S.v === d.v); paintStatus();
     });
     es.addEventListener('change', function (e) { try { onChange(JSON.parse(e.data)); } catch (x) { /* ignore a malformed frame */ } });
     es.onerror = function () {
@@ -367,14 +383,20 @@
 
   function onChange(ev) {
     if (ev.reset && S.v != null && ev.v < S.v) {                  // shop data was restored from an older backup: start clean
-      S.v = ev.v; S.fresh = ev.v; saveMeta();
-      cache.clear().then(function () { renderRecent(); if (S.full) syncCatalog(true).catch(function () { }); });
+      S.v = ev.v; S.fresh = ev.v; S.live = true; saveMeta(); paintStatus();
+      var openCode = S.open;
+      cache.clear().then(function () {
+        renderRecent();
+        if (openCode && S.open === openCode) lookup(openCode, 'restore');
+        if (S.full) syncCatalog(true).catch(function () { });
+      });
       loadHomeSoon(); return;
     }
-    if (S.v != null && ev.v <= S.v) return;                       // duplicate
+    if (S.v != null && ev.v <= S.v) { if (S.es && !S.live) { S.live = true; paintStatus(); } return; } // duplicate
     var gap = S.v != null && ev.p !== S.v;
     if (gap || ev.reset) S.fresh = ev.v;                            // we cannot vouch for older cached items any more
     S.v = ev.v;
+    if (S.es && !S.live) { S.live = true; paintStatus(); }
     var items = ev.items || [], gone = ev.gone || [];
     var work = items.map(function (it) {
       return cache.get(it.code).then(function (old) {
@@ -516,6 +538,12 @@
   document.addEventListener('visibilitychange', function () { // save battery and data while the app is in the background
     if (document.hidden) { S.hiddenAt = Date.now(); if (!$('scanner').hidden) closeScanner(); setTimeout(function () { if (document.hidden) disconnect(); }, 30000); }
     else { connect(); if (Date.now() - S.hiddenAt > 30000) loadHome(); if (sheetItem) refreshSheetMeta(); }
+  });
+
+  window.addEventListener('storage', function (e) {
+    var pfx = 'pt:' + slug + ':';
+    if (e.key === pfx + 'fresh' && e.newValue && +e.newValue > S.fresh) { S.fresh = +e.newValue; refreshSheetMeta(); }
+    else if (e.key === pfx + 'recent') renderRecent();
   });
 
   renderHome(); renderRecent(); paintStatus();

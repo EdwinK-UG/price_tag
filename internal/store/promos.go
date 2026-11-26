@@ -99,7 +99,27 @@ func (in *PromoInput) validate() ([]PromoItemInput, error) {
 	return out, nil
 }
 
+func (c *txc) bumpProductRevs(codes []string) error {
+	if len(codes) == 0 {
+		return nil
+	}
+	const chunk = 400
+	for i := 0; i < len(codes); i += chunk {
+		part := codes[i:min(i+chunk, len(codes))]
+		args := make([]any, 0, len(part)+1)
+		args = append(args, c.v)
+		for _, code := range part {
+			args = append(args, code)
+		}
+		if _, err := c.tx.ExecContext(c.ctx, `UPDATE products SET rev=? WHERE code IN (`+placeholders(len(part))+`)`, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *txc) setPromoItems(id int64, items []PromoItemInput) error {
+	codes := make([]string, 0, len(items))
 	for _, it := range items {
 		var base int64
 		var del int
@@ -116,8 +136,9 @@ func (c *txc) setPromoItems(id int64, items []PromoItemInput) error {
 			return err
 		}
 		c.touch(it.Code)
+		codes = append(codes, it.Code)
 	}
-	return nil
+	return c.bumpProductRevs(codes)
 }
 
 func (c *txc) promoCodes(id int64) ([]string, error) {
@@ -180,6 +201,9 @@ func (s *Store) UpdatePromo(ctx context.Context, actor string, id int64, in Prom
 		for _, code := range old {
 			c.touch(code)
 		}
+		if e = c.bumpProductRevs(old); e != nil {
+			return e
+		}
 		if _, e = c.tx.ExecContext(ctx, `UPDATE promotions SET title=?,text=?,starts_at=?,ends_at=?,enabled=?,updated_at=? WHERE id=?`,
 			in.Title, in.Text, in.StartsAt, in.EndsAt, b2i(in.Enabled), c.now, id); e != nil {
 			return e
@@ -210,6 +234,9 @@ func (s *Store) DeletePromo(ctx context.Context, actor string, id int64) error {
 		}
 		for _, code := range old {
 			c.touch(code)
+		}
+		if e = c.bumpProductRevs(old); e != nil {
+			return e
 		}
 		if _, e = c.tx.ExecContext(ctx, `DELETE FROM promotions WHERE id=?`, id); e != nil {
 			return e

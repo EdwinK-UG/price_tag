@@ -87,15 +87,15 @@ Lookup time on Slow 3G is almost entirely the 400 ms round trip (nothing left to
 
 ### 4.5 Quality gates
 
-* **Go**: 65 tests + 4 fuzzers (barcode canonical form 1.7 M executions, money 200 k, CSV 275 k, checkout code normaliser 23 k, no failures), all under `-race`, `go vet` clean.
+* **Go**: 70 tests + 4 fuzzers (barcode canonical form 1.7 M executions, money 200 k, CSV 275 k, checkout code normaliser 23 k, no failures), all under `-race`, `go vet` clean.
 * **JS unit**: 33 tests (incl. 7 cart/checkout unit tests).
-* **Browser**: 56 tests (incl. 6 Stage 1 cart e2e tests + 3 Stage 2 checkout e2e tests), 0 console errors or CSP violations on any page.
-* Asset budgets enforced in CI-able tests: shopper app ≤ 16 KB gzipped (**15,931 B**, +20 B over Stage 1), lazy cart + checkout module ≤ 8 KB (**6,983 B** js+css, 0 B on cold first load), lazy QR generator (**11,728 B** gz, loaded only on tapping Checkout; 0 B when checkout is off), scanner ≤ 8 KB (6,462 B), admin (16,948 B), code parses as **ES2017** (Chrome 58+).
-* **Stage 2 impact on Slow 3G + 6× CPU** (Chromium 1255, loopback): cold visit **18,336 B** (5 requests — `cart.js`, `cart.css`, and QR library not fetched until used), FCP **1.22 s**, home visible **2.18 s**; lookup **1,080 ms / 406 B** (repeat **157 ms / 0 requests**); warm visit **398 ms / 161 B**; Fast 3G cold home **962 ms**, lookup **467 ms / 406 B**; live edit latency p50 **18 ms**, p95 **35 ms** (25 edits). **Not verified:** real phones, real USB/Bluetooth keyboard-wedge barcode scanners at a till, cashier camera QR scanning via native `BarcodeDetector` on real devices, iOS Safari private mode `localStorage` quirks, or Stage 3 audit mode (not yet built).
+* **Browser**: 57 tests (incl. 6 Stage 1 cart, 3 Stage 2 checkout, and 1 end-to-end Stage 3 audit/report test), 0 console errors or CSP violations on any page.
+* Asset budgets enforced in CI-able tests: shopper app ≤ 16 KB gzipped (**15,931 B**, 0 B added in Stage 3), lazy cart + checkout module ≤ 8 KB (**6,983 B** js+css, 0 B on cold first load), lazy QR generator (**11,728 B** gz, loaded only on tapping Checkout; 0 B when checkout is off), scanner ≤ 8 KB (6,462 B), admin (**20,093 B**), code parses as **ES2017** (Chrome 58+).
+* **Scan & Go (Stages 1–3) impact on Slow 3G + 6× CPU** (Chromium 1255, loopback): cold visit **18,337 B** (5 requests — `cart.js`, `cart.css`, and QR library not fetched until used), FCP **1.14 s**, home visible **2.30 s**; lookup **1,066 ms / 406 B** (repeat **188 ms / 0 requests**); warm visit **465 ms / 161 B**; Fast 3G cold home **959 ms**, lookup **490 ms / 406 B**; live edit latency p50 **20 ms**, p95 **33 ms** (25 edits). **Not verified:** real phones, real USB/Bluetooth keyboard-wedge barcode scanners at a till, cashier camera QR scanning via native `BarcodeDetector` on real devices, iOS Safari private mode `localStorage` quirks, or real-world theft-deterrence effectiveness of any particular spot-check percentage.
 
 ## 5. Security review (my own; please re-check independently)
 
-**Built in:** argon2id passwords; random 256-bit sessions stored only as hashes (`HttpOnly`, `SameSite=Strict`, `Secure` behind TLS); CSRF header + same-origin check; scoped, hashed, revocable integration keys; roles with last-owner protection; per-IP and per-account throttles that count only failed logins; strict CSP (no inline script/style/eval); all server text inserted via `textContent` (a test fails the build on `innerHTML`/`eval`); CSV export guards against spreadsheet formula injection (round-trips on import); slugs validated against path traversal; request body and row limits; bounded in-memory limiter maps; database backups strip live sessions; `synchronous=FULL` so an acknowledged edit survives a power cut; an audit trail of who changed which price.
+**Built in:** argon2id passwords; random 256-bit sessions stored only as hashes (`HttpOnly`, `SameSite=Strict`, `Secure` behind TLS); CSRF header + same-origin check; scoped, hashed, revocable integration keys; roles with last-owner protection; per-IP and per-account throttles that count only failed logins; per-IP and per-shop checkout code lookup throttles that refund valid lookups and return byte-identical `404` on invalid/missing/expired codes; server-side `crypto/rand` spot-check decisions hidden from shoppers and non-rerollable; strict CSP (no inline script/style/eval); all server text inserted via `textContent` (a test fails the build on `innerHTML`/`eval`); CSV exports (catalogue and audit report) guard against spreadsheet formula injection; slugs validated against path traversal; request body and row limits; bounded in-memory limiter maps; database backups strip live sessions; `synchronous=FULL` so an acknowledged edit survives a power cut; an audit trail of who changed which price and who verified/flagged which checkout.
 
 **Weaknesses I know about (not fixed):**
 
@@ -106,7 +106,7 @@ Lookup time on Slow 3G is almost entirely the 400 ms round trip (nothing left to
 5. **Single process, single machine.** No high availability. The files are portable, so recovery = restore a backup elsewhere, but there will be downtime.
 6. **The operator token** (if enabled) is a single shared secret that can create shops. Keep it out of browsers; put the operator API behind your own sign-up server.
 7. The SQLite driver (`modernc.org/sqlite`) is a pure-Go translation of SQLite; mature, but a different code path from the C original. `golang.org/x/crypto` and the driver should be updated routinely (`go list -m -u all`).
-8. Data protection: shoppers have no accounts and the app stores no personal data about them (IP addresses appear in access logs only if `-access-log` is on, and in memory for rate limiting). Shop staff e-mails/names are stored. **Check Uganda's Data Protection and Privacy Act obligations (registration, privacy notice) before launch; I am not a lawyer.**
+8. Data protection & Scan & Go privacy: shoppers have no accounts and the app stores **no personal data, device fingerprints, or IP addresses** with checkout orders or mismatches (IP addresses appear in access logs only if `-access-log` is on, and in memory for rate limiting). **By design, repeat offenders cannot be tracked.** Shop staff e-mails/names are stored. **Check Uganda's Data Protection and Privacy Act obligations (registration, privacy notice) before launch; I am not a lawyer.**
 
 ## 6. Not done / not verified (be sceptical of anything built on these)
 
@@ -127,7 +127,7 @@ Lookup time on Slow 3G is almost entirely the 400 ms round trip (nothing left to
 * Unit prices (price per kg), stock levels, aisle/location, product photos, categories browsing, VAT breakdown, multi-branch price books, scanning barcodes in the admin to add products, recurring offers.
 * **Time zones are a fixed offset** (East Africa Time = UTC+3, no daylight saving); fine for Uganda, wrong for DST regions.
 * Admin has no undo; the activity log is the recovery aid.
-* Schema migrations now exist (`v1 → v2` transactional upgrade in `store.migrate()`), though rollback/downgrade migrations are not built (restore from a backup instead).
+* Schema migrations now exist (`v1 → v2 → v3` transactional upgrades in `store.migrate()`), though rollback/downgrade migrations are not built (restore from a backup instead).
 * The offline **"load prices from a file / over USB"** idea and dedicated cheap hardware you asked about are **not built** (see §8).
 
 ## 7. Known limitations of the design (not bugs)

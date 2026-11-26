@@ -31,16 +31,23 @@ import (
 )
 
 const (
-	schemaVersion = 1
+	schemaVersion = 2
 	// MaxInline is the most changed items sent inline in one event; bigger
 	// commits (e.g. a nightly price file) send a "reset" hint instead.
 	MaxInline = 50
 	MaxPrice  = int64(1) << 50
+
+	DefaultCheckoutTTLMin = 180 // 3 hours
+	CheckoutModeTick      = "tick"
+	CheckoutModeRescan    = "rescan"
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrExists   = errors.New("already exists")
+	ErrNotFound         = errors.New("not found")
+	ErrExists           = errors.New("already exists")
+	ErrAlreadyVerified  = errors.New("already verified")
+	ErrCheckoutDisabled = errors.New("checkout disabled")
+	ErrTooManyCheckouts = errors.New("too many open checkouts")
 )
 
 // ValidationError is a problem with caller input; Code is machine-readable.
@@ -65,15 +72,30 @@ var reservedSlugs = map[string]bool{
 func ValidSlug(s string) bool { return slugRe.MatchString(s) && !reservedSlugs[s] }
 
 type Settings struct {
-	Name         string `json:"name"`
-	Currency     string `json:"currency"`
-	Decimals     int    `json:"decimals"`
-	TZOffset     int    `json:"tz_offset"` // minutes east of UTC; Uganda (EAT) = 180
-	Announcement string `json:"announcement"`
+	Name                string `json:"name"`
+	Currency            string `json:"currency"`
+	Decimals            int    `json:"decimals"`
+	TZOffset            int    `json:"tz_offset"` // minutes east of UTC; Uganda (EAT) = 180
+	Announcement        string `json:"announcement"`
+	CheckoutEnabled     bool   `json:"checkout_enabled"`
+	CheckoutTTLMin      int    `json:"checkout_ttl_min"`
+	CheckoutDefaultMode string `json:"checkout_default_mode"` // "tick" | "rescan"
 }
 
 func DefaultSettings(name string) Settings {
-	return Settings{Name: name, Currency: "UGX", Decimals: 0, TZOffset: 180}
+	return Settings{
+		Name: name, Currency: "UGX", Decimals: 0, TZOffset: 180,
+		CheckoutEnabled: false, CheckoutTTLMin: DefaultCheckoutTTLMin, CheckoutDefaultMode: CheckoutModeTick,
+	}
+}
+
+func (s *Settings) applyDefaults() {
+	if s.CheckoutTTLMin == 0 {
+		s.CheckoutTTLMin = DefaultCheckoutTTLMin
+	}
+	if s.CheckoutDefaultMode == "" {
+		s.CheckoutDefaultMode = CheckoutModeTick
+	}
 }
 
 var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
@@ -82,6 +104,8 @@ func (s *Settings) normalize() error {
 	s.Name = strings.TrimSpace(s.Name)
 	s.Announcement = strings.TrimSpace(s.Announcement)
 	s.Currency = strings.ToUpper(strings.TrimSpace(s.Currency))
+	s.CheckoutDefaultMode = strings.ToLower(strings.TrimSpace(s.CheckoutDefaultMode))
+	s.applyDefaults()
 	switch {
 	case s.Name == "" || len([]rune(s.Name)) > 80:
 		return invalid("name", "store name must be 1-80 characters")
@@ -93,6 +117,10 @@ func (s *Settings) normalize() error {
 		return invalid("tz_offset", "time zone offset out of range")
 	case len([]rune(s.Announcement)) > 200:
 		return invalid("announcement", "announcement is limited to 200 characters")
+	case s.CheckoutTTLMin < 5 || s.CheckoutTTLMin > 1440:
+		return invalid("checkout_ttl_min", "checkout expiry must be between 5 and 1440 minutes")
+	case s.CheckoutDefaultMode != CheckoutModeTick && s.CheckoutDefaultMode != CheckoutModeRescan:
+		return invalid("checkout_default_mode", "checkout default mode must be tick or rescan")
 	}
 	return nil
 }
@@ -189,6 +217,28 @@ CREATE TABLE history(
 CREATE INDEX history_ref ON history(kind, ref, id);
 `
 
+const schemaV2SQL = `
+CREATE TABLE checkouts(
+  code TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('open','verified')),
+  verified_at INTEGER,
+  verified_by TEXT NOT NULL DEFAULT '',
+  verify_mode TEXT NOT NULL DEFAULT ''
+) WITHOUT ROWID;
+CREATE INDEX checkouts_expires ON checkouts(expires_at);
+CREATE INDEX checkouts_created ON checkouts(created_at);
+CREATE TABLE checkout_items(
+  code TEXT NOT NULL REFERENCES checkouts(code) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  barcode TEXT NOT NULL,
+  qty INTEGER NOT NULL CHECK(qty >= 1),
+  unit_price INTEGER,
+  PRIMARY KEY(code, seq)
+) WITHOUT ROWID;
+`
+
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(5000)")
@@ -277,7 +327,7 @@ func Create(dir, slug string, set Settings, ownerEmail, ownerName, ownerPassword
 		r.Close()
 		return fail(err)
 	}
-	_, err = tx.Exec(schemaSQL)
+	_, err = tx.Exec(schemaSQL + schemaV2SQL)
 	if err == nil {
 		_, err = tx.Exec(`INSERT INTO meta(key,value) VALUES('schema_version',?),('v','0'),('home_rev','0'),('purged_before','0'),('settings',?),('created_at',?)`,
 			strconv.Itoa(schemaVersion), string(setJSON), strconv.FormatInt(time.Now().Unix(), 10))
@@ -328,6 +378,32 @@ func Open(dir, slug string) (*Store, error) {
 	return s, nil
 }
 
+func (s *Store) migrate(from int) error {
+	for v := from; v < schemaVersion; v++ {
+		tx, err := s.w.Begin()
+		if err != nil {
+			return err
+		}
+		var stepErr error
+		switch v {
+		case 1:
+			_, stepErr = tx.Exec(schemaV2SQL)
+		default:
+			stepErr = fmt.Errorf("no migration from schema v%d", v)
+		}
+		if stepErr == nil {
+			_, stepErr = tx.Exec(`UPDATE meta SET value=? WHERE key='schema_version'`, strconv.Itoa(v+1))
+		}
+		if stepErr == nil {
+			stepErr = tx.Commit()
+		} else {
+			tx.Rollback()
+			return fmt.Errorf("migrate schema v%d->v%d: %w", v, v+1, stepErr)
+		}
+	}
+	return nil
+}
+
 func (s *Store) load() error {
 	var ver int
 	var raw string
@@ -335,10 +411,17 @@ func (s *Store) load() error {
 		return fmt.Errorf("not a price-tag store file: %w", err)
 	}
 	ver, _ = strconv.Atoi(raw)
+	if ver < 1 {
+		return fmt.Errorf("not a price-tag store file: invalid schema version %q", raw)
+	}
 	if ver > schemaVersion {
 		return fmt.Errorf("store file is schema v%d, this build understands up to v%d", ver, schemaVersion)
 	}
-	// (future migrations: if ver < schemaVersion { migrate(...) })
+	if ver < schemaVersion {
+		if err := s.migrate(ver); err != nil {
+			return err
+		}
+	}
 	for key, dst := range map[string]*atomic.Int64{"v": &s.v, "home_rev": &s.homeRev, "purged_before": &s.purged} {
 		var val string
 		if err := s.r.QueryRow(`SELECT value FROM meta WHERE key=?`, key).Scan(&val); err != nil {
@@ -355,6 +438,7 @@ func (s *Store) load() error {
 	if err := json.Unmarshal([]byte(js), &set); err != nil {
 		return err
 	}
+	set.applyDefaults()
 	s.settings.Store(&set)
 	return nil
 }
@@ -539,7 +623,9 @@ func (s *Store) Compact(ctx context.Context) error {
 		}
 		s.purged.Store(cur)
 	}
-	_, _ = s.w.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at<?`, time.Now().Unix())
+	now := time.Now().Unix()
+	_, _ = s.w.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at<?`, now)
+	_, _ = s.w.ExecContext(ctx, `DELETE FROM checkouts WHERE status='open' AND expires_at<=?`, now)
 	_, _ = s.w.ExecContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`)
 	_, _ = s.w.ExecContext(ctx, `PRAGMA optimize`)
 	return nil

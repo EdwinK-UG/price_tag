@@ -46,6 +46,7 @@ type Server struct {
 	mux    *http.ServeMux
 
 	rlPublic, rlCatalog, rlLogin, rlAccount, rlAdmin, rlIngest, rlOperator *limiter
+	rlCheckoutCreate, rlCheckoutIP, rlCheckoutStore                        *limiter
 
 	sseMu sync.Mutex
 	sseIP map[string]int
@@ -81,15 +82,18 @@ func New(cfg Config) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg: cfg, log: cfg.Logger, reg: NewRegistry(cfg.DataDir, cfg.Logger), static: st, mux: http.NewServeMux(),
-		rlPublic:   newLimiter(cfg.PublicRPS, cfg.PublicBurst),
-		rlCatalog:  newLimiter(1.0/300, 6), // ~12 full downloads/hour/IP
-		rlLogin:    newLimiter(1.0/6, 10),  // per IP+store
-		rlAccount:  newLimiter(1.0/30, 8),  // per account: slows guessing without hard lock-out
-		rlAdmin:    newLimiter(30, 120),
-		rlIngest:   newLimiter(1, 20),
-		rlOperator: newLimiter(1, 20),
-		sseIP:      map[string]int{},
-		ctx:        ctx, cancel: cancel, start: time.Now(),
+		rlPublic:         newLimiter(cfg.PublicRPS, cfg.PublicBurst),
+		rlCatalog:        newLimiter(1.0/300, 6), // ~12 full downloads/hour/IP
+		rlLogin:          newLimiter(1.0/6, 10),  // per IP+store
+		rlAccount:        newLimiter(1.0/30, 8),  // per account: slows guessing without hard lock-out
+		rlAdmin:          newLimiter(30, 120),
+		rlIngest:         newLimiter(1, 20),
+		rlOperator:       newLimiter(1, 20),
+		rlCheckoutCreate: newLimiter(2, 30),     // per IP+store: shop Wi-Fi sized
+		rlCheckoutIP:     newLimiter(1.0/2, 20), // per IP+store failed lookups
+		rlCheckoutStore:  newLimiter(1, 40),     // per store failed lookups
+		sseIP:            map[string]int{},
+		ctx:              ctx, cancel: cancel, start: time.Now(),
 	}
 	s.routes()
 	go s.reg.Janitor(ctx, time.Minute, 10*time.Minute)
@@ -101,7 +105,7 @@ func New(cfg Config) (*Server, error) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				for _, l := range []*limiter{s.rlPublic, s.rlCatalog, s.rlLogin, s.rlAccount, s.rlAdmin, s.rlIngest, s.rlOperator} {
+				for _, l := range []*limiter{s.rlPublic, s.rlCatalog, s.rlLogin, s.rlAccount, s.rlAdmin, s.rlIngest, s.rlOperator, s.rlCheckoutCreate, s.rlCheckoutIP, s.rlCheckoutStore} {
 					l.gc(15 * time.Minute)
 				}
 			}
@@ -305,6 +309,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/s/{slug}/sample", s.public(s.rlPublic, s.sample))
 	m.HandleFunc("GET /api/v1/s/{slug}/catalog", s.public(s.rlCatalog, s.catalog))
 	m.HandleFunc("GET /api/v1/s/{slug}/events", s.events)
+	m.HandleFunc("POST /api/v1/s/{slug}/checkouts", s.createCheckout)
 
 	m.HandleFunc("POST /api/v1/s/{slug}/ingest", s.ingest)
 

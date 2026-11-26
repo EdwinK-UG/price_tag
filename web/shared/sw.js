@@ -1,8 +1,8 @@
 /* Service worker: makes the shopper app open instantly and work offline.
  * It never touches /api/ (prices are always fetched fresh) or the admin app. */
 'use strict';
-var V = 'pt-shell-v1';
-var PRE = ['/static/shopper/app.css', '/static/shopper/app.js', '/static/shopper/code.js', '/static/shopper/scanner.js', '/static/shopper/decode.js', '/static/shared/icon.svg'];
+var V = 'pt-shell-v2';
+var PRE = ['/static/shopper/app.css', '/static/shopper/app.js', '/static/shopper/code.js', '/static/shopper/cart.js', '/static/shopper/cart.css', '/static/shopper/scanner.js', '/static/shopper/decode.js', '/static/shared/icon.svg'];
 var SHELL = '/s/_shell';   // every store serves the same HTML shell, so one cached copy serves them all
 
 self.addEventListener('install', function (e) {

@@ -1,0 +1,30 @@
+/* Lazy-loaded cart sheet styles (loaded alongside cart.js). */
+.cart-head{display:flex;align-items:center;gap:8px;margin:0 40px 10px 0}
+.cart-title{margin:0;font-size:20px;color:var(--ink);text-transform:none;letter-spacing:0;flex:1}
+.cart-clr{color:var(--offer);font-weight:600}
+.cart-confirm{margin:0 0 12px;padding:12px;border-radius:12px;background:var(--offer-bg);color:var(--offer)}
+.cart-confirm p{margin:0 0 8px;font-weight:650;font-size:14px}
+.cart-confirm-btns{display:flex;gap:8px}
+.cart-confirm-btns .btn{margin-top:0;flex:1}
+.btn.danger{background:var(--offer);color:#fff}
+.cart-warn{margin:0 0 10px;padding:10px 12px;border-radius:10px;background:var(--warn-bg);color:var(--warn);font-size:14px}
+.cart-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.cart-item{padding:12px 0;border-bottom:1px solid var(--line)}
+.cart-item.changed{background:var(--warn-bg);margin:0 -12px;padding:12px;border-radius:10px}
+.cart-name{display:block;width:100%;padding:0;border:0;background:none;text-align:left;font-size:16px}
+.cart-name small{color:var(--mute);font-weight:400}
+.cart-unit{margin:2px 0 0;font-size:14px;color:var(--mute);font-variant-numeric:tabular-nums}
+.cart-unit.deal{color:var(--offer);font-weight:600}.cart-unit.unk,.cart-lt.unk{color:var(--warn);font-weight:600}
+.chg{display:inline-block;margin:4px 0 0;padding:2px 8px;border-radius:99px;background:var(--warn-bg);color:var(--warn);font-size:12px;font-weight:700;border:1px solid var(--warn)}
+.cart-age{margin:4px 0 0;font-size:12px;color:var(--mute)}
+.cart-ctrl{margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cart-qty{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.cart-qty button{min-width:40px;min-height:40px;border:0;background:none;font-size:20px;font-weight:700}
+.cart-qty .q{min-width:28px;padding:0 6px;text-align:center;font-weight:700;font-variant-numeric:tabular-nums}
+.cart-lt{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
+.cart-rm{padding:6px;font-size:13px;color:var(--mute)}
+.cart-tot{margin-top:14px;padding:14px;border-radius:12px;background:var(--bg);border:1px solid var(--line)}
+.cart-tot.stale{background:var(--warn-bg);border-color:var(--warn)}
+.cart-tot-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:16px}
+.cart-tot-amt{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums}
+.cart-tot-note{margin:4px 0 0;font-size:13px;color:var(--warn);font-weight:600}

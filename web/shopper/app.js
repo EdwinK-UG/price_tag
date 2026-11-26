@@ -45,7 +45,7 @@
     fresh: +(ls.get('fresh') || 0),                       // cached items verified before this are suspect
     full: ls.get('full') === '1',                         // whole catalogue saved for offline
     live: false, online: navigator.onLine !== false, offset: +(ls.get('offset') || 0),
-    open: null,                                           // code shown in the sheet
+    open: null, cartOpen: false,                          // code shown in the sheet / cart view open
     es: null, backoff: 1500, hiddenAt: 0
   };
   function saveMeta() {
@@ -151,6 +151,26 @@
     if (on && !S.live) { disconnect(); connect(); }        // don't wait for the browser's retry timer
   }
 
+  // ---- cart (lazy-loaded on first use or when a saved cart is non-empty) ---------------------
+  var cartCtl = null, cartLoading = null;
+  function rawCart() { var a = jget('cart', []); return Array.isArray(a) ? a : []; }
+  function cartCount() { return cartCtl ? cartCtl.count() : rawCart().reduce(function (n, l) { return n + (l && l.qty > 0 ? l.qty : 0); }, 0); }
+  function cartQty(code) { if (cartCtl) return cartCtl.qtyOf(code); var a = rawCart(); for (var i = 0; i < a.length; i++) if (a[i] && a[i].code === code) return a[i].qty || 0; return 0; }
+  function cartCodes() { return cartCtl ? cartCtl.codes() : rawCart().map(function (l) { return l && l.code; }).filter(Boolean); }
+  function paintCartBadge(n) { var b = $('cartCnt'), c = n == null ? cartCount() : n; b.textContent = String(c); b.hidden = !c; }
+  function loadCart() {
+    if (cartCtl) return Promise.resolve(cartCtl);
+    if (!cartLoading) {
+      if (!document.querySelector('link[href="/static/shopper/cart.css"]')) document.head.appendChild(h('link', { rel: 'stylesheet', href: '/static/shopper/cart.css' }));
+      cartLoading = (window.PTCart ? Promise.resolve() : loadScript('/static/shopper/cart.js')).then(function () {
+        cartCtl = window.PTCart.mount({ slug: slug, store: store, money: money, ago: ago, nowSec: nowSec, C: C, h: h, openSheet: openSheet, closeSheet: closeSheet, sheet: sheet, toast: toast, state: S, cache: cache, lookup: lookup, fetchItem: fetchItem, onBadge: paintCartBadge });
+        return cartCtl;
+      }, function (e) { cartLoading = null; throw e; });
+    }
+    return cartLoading;
+  }
+  function withCart(fn) { return loadCart().then(fn, function () { toast('Could not load cart. Check your connection.'); }); }
+
   // ---- UI: header, notices -----------------------------------------------------------------------
   function paintStatus() {
     var d = $('live');
@@ -159,6 +179,7 @@
     var n = $('notice');
     if (!S.online) { n.textContent = 'No connection. Showing prices saved on this phone.'; n.hidden = false; } else n.hidden = true;
     if (S.open) refreshSheetMeta();
+    if (cartCtl) cartCtl.onStatus();
   }
   function toast(msg) {
     var t = $('toast'); t.textContent = msg; t.hidden = false;
@@ -245,7 +266,7 @@
   function closeSheet(fromPop) {
     var s = $('sheet');
     if (s.hidden) return;
-    s.hidden = true; S.open = null; sheetItem = null; clearTimeout(sheetTimer);
+    s.hidden = true; S.open = null; S.cartOpen = false; sheetItem = null; clearTimeout(sheetTimer);
     if (!fromPop && $('scanner').hidden) popOverlay();
     if (opener && opener.focus) try { opener.focus(); } catch (e) { }
   }
@@ -256,7 +277,7 @@
     var btn = card.querySelector('button.close'); if (btn) btn.focus();
   }
   function message(title, text, action) {
-    openSheet(); sheetItem = null;
+    openSheet(); S.cartOpen = false; sheetItem = null;
     sheet(h('div', { class: 'big' }, [h('h2', { id: 'sheetTitle', text: title }), h('p', { text: text }), action || null]));
   }
   function metaText(it) {
@@ -265,7 +286,7 @@
     return 'Checking for the latest price…';
   }
   function renderItem(it, changed) {
-    openSheet(); sheetItem = it;
+    openSheet(); S.cartOpen = false; sheetItem = it;
     var e = eff(it), nodes = [];
     nodes.push(h('p', { class: 'cat', text: it.category || '' }));
     nodes.push(h('h2', { class: 'name', id: 'sheetTitle', text: it.name }));
@@ -278,6 +299,7 @@
       nodes.push(h('p', { class: 'sub', text: 'Normal price ' + store().currency + ' ' + money(it.price) + ' · you save ' + money(it.price - e.price) }));
       nodes.push(h('p', { class: 'sub', text: 'Offer ends ' + when(e.promo.to) }));
     } else if (e.next) nodes.push(h('p', { class: 'sub', text: 'Offer from ' + when(e.next.from) + ': ' + store().currency + ' ' + money(e.next.price) }));
+    nodes.push(cartCtl ? cartCtl.itemBar(it, function () { renderItem(it); }) : h('div', { class: 'cart-act' }, h('button', { class: 'btn cart-add', type: 'button', text: cartQty(it.code) ? 'In cart (' + cartQty(it.code) + ') · Add 1' : 'Add to cart', onclick: function () { withCart(function (c) { c.add(it); renderItem(it); toast('Added to cart'); }); } })));
     nodes.push(h('div', { class: 'meta' }, [h('span', { class: 'ld' + (S.live && it.chk >= S.fresh ? ' on' : '') }), h('span', { id: 'metaText', text: metaText(it), 'aria-live': 'polite' }), h('code', { text: C.display(it.code) })]));
     sheet(nodes);
     clearTimeout(sheetTimer);
@@ -294,7 +316,7 @@
   function lookup(raw, src) {
     var c = C.canonical(raw);
     if (!c.ok) { message('Check the number', ERR[c.error] || 'Invalid code.'); return Promise.resolve(); }
-    var code = c.code; S.open = code;
+    var code = c.code; S.open = code; S.cartOpen = false;
     return cache.get(code).then(function (cached) {
       if (S.open !== code) return;
       if (cached) {
@@ -303,7 +325,14 @@
       } else { openSheet(); sheet(h('div', { class: 'big' }, [h('div', { class: 'spin', role: 'status', 'aria-label': 'Loading' }), h('p', { text: 'Getting the price…' })])); }
       return fetchItem(code, cached).then(function (it) {
         if (S.open !== code) return;
-        if (it === 404) { cache.del(code); message('Not in the price list', 'We could not find this product (' + C.display(code) + '). Ask a member of staff for the price.'); return; }
+        if (it === 404) {
+          cache.del(code);
+          if (cartQty(code)) withCart(function (ct) { ct.onEvents(null, [code], S.v); });
+          message('Not in the price list', 'We could not find this product (' + C.display(code) + '). Ask a member of staff for the price.',
+            h('button', { class: 'btn ghost', type: 'button', text: 'Add to cart (price unknown)', onclick: function () { withCart(function (ct) { ct.addUnknown(code, C.display(code)); toast('Added to cart (price unknown)'); ct.open(); }); } }));
+          return;
+        }
+        if (cartQty(it.code)) withCart(function (ct) { ct.onEvents([it], null, it.chk); });
         renderItem(it); addRecent(code);
       }, function () {
         if (S.open !== code) return;
@@ -337,7 +366,7 @@
   function searchName(q) {
     var p = S.full ? cache.search(q, 20) : getRaw('search?q=' + encodeURIComponent(q)).then(function (r) { return r.json(); }).then(function (j) { return j.items; });
     return p.then(function (items) {
-      openSheet(); sheetItem = null; S.open = null;
+      openSheet(); S.cartOpen = false; sheetItem = null; S.open = null;
       if (!items.length) { sheet(h('div', { class: 'big' }, [h('h2', { id: 'sheetTitle', text: 'No match' }), h('p', { text: 'Nothing found for "' + q + '". Try another word or scan the barcode.' })])); return; }
       var list = h('ul', { class: 'rows' });
       items.forEach(function (it) {
@@ -388,6 +417,7 @@
       cache.clear().then(function () {
         renderRecent();
         if (openCode && S.open === openCode) lookup(openCode, 'restore');
+        if (cartCodes().length) revalidateVisible(true);
         if (S.full) syncCatalog(true).catch(function () { });
       });
       loadHomeSoon(); return;
@@ -400,7 +430,7 @@
     var items = ev.items || [], gone = ev.gone || [];
     var work = items.map(function (it) {
       return cache.get(it.code).then(function (old) {
-        if (!old && !S.full && S.open !== it.code) return;          // never looked at it: don't store it
+        if (!old && !S.full && S.open !== it.code && !cartQty(it.code)) return; // never looked at it: don't store it
         if (old && old.rev > it.rev) return;
         var changed = !old || old.price !== it.price || JSON.stringify(old.promos || []) !== JSON.stringify(it.promos || []);
         it.chk = ev.v; it.at = Date.now();
@@ -410,6 +440,7 @@
     gone.forEach(function (code) {
       work.push(cache.del(code).then(function () { if (S.open === code) message('No longer listed', 'This product was just removed from the shop\'s price list. Ask staff for the price.'); }));
     });
+    if (cartCount() > 0 && (items.length || gone.length)) withCart(function (c) { c.onEvents(items, gone, ev.v); });
     Promise.all(work).then(function () { renderRecent(); });
     saveMeta();
     if (ev.reset && S.full) syncCatalog(false).catch(function () { });
@@ -419,17 +450,25 @@
   }
 
   // After a bulk change (e.g. the nightly price file) we do not know which cached
-  // prices moved, so re-check only what is on screen: the open item and the
-  // recents. Each is a conditional request (~100 bytes when nothing changed).
-  function revalidateVisible() {
+  // prices moved, so re-check only what is on screen: the open item, recents and
+  // cart items. Each is a conditional request (~100 bytes when nothing changed).
+  function revalidateVisible(force) {
     var codes = jget('recent', []).slice(0, 12);
+    cartCodes().forEach(function (c) { if (codes.indexOf(c) < 0) codes.push(c); });
     if (S.open && codes.indexOf(S.open) < 0) codes.unshift(S.open);
     codes.forEach(function (code) {
       cache.get(code).then(function (cached) {
-        if (!cached) return;
-        return fetchItem(code, cached).then(function (it) {
-          if (it === 404) { cache.del(code); if (S.open === code) message('No longer listed', 'This product was just removed from the shop\'s price list. Ask staff for the price.'); return; }
-          if (S.open === code && (it.price !== cached.price || it.rev !== cached.rev)) { sheetItem = it; renderItem(it, true); }
+        var inC = cartQty(code) > 0;
+        if (!cached && !force && !inC) return;
+        return fetchItem(code, force ? null : cached).then(function (it) {
+          if (it === 404) {
+            cache.del(code);
+            if (inC) withCart(function (c) { c.onEvents(null, [code], S.v, { force: !!force }); });
+            if (S.open === code) message('No longer listed', 'This product was just removed from the shop\'s price list. Ask staff for the price.');
+            return;
+          }
+          if (inC) withCart(function (c) { c.onEvents([it], null, it.chk, { force: !!force }); });
+          if (S.open === code && (!cached || it.price !== cached.price || it.rev !== cached.rev)) { sheetItem = it; renderItem(it, true); }
           else if (S.open === code) refreshSheetMeta();
         });
       }).catch(function () { }).then(renderRecent);
@@ -469,7 +508,7 @@
   }
 
   function openMenu() {
-    openSheet(); sheetItem = null; S.open = null;
+    openSheet(); S.cartOpen = false; sheetItem = null; S.open = null;
     var prog = h('progress', { max: '100', value: '0', hidden: true }), status = h('p', { class: 'sub', text: S.full ? 'Prices are saved on this phone for use without a connection.' : 'Save the whole price list on this phone to scan with no signal. Best done on Wi-Fi (about 1 MB per 20,000 products).' });
     var dl = h('button', { class: 'btn', type: 'button', text: S.full ? 'Update saved prices' : 'Save prices for offline use', onclick: function () {
       dl.disabled = true; prog.hidden = false; status.textContent = 'Downloading…';
@@ -478,7 +517,7 @@
         .catch(function () { status.textContent = 'The download did not finish. Try again on a better connection.'; prog.hidden = true; dl.disabled = false; });
     } });
     var rm = h('button', { class: 'btn ghost', type: 'button', text: 'Forget everything saved on this phone', onclick: function () {
-      cache.clear().then(function () { ['recent', 'v', 'fresh', 'full', 'home', 'etag'].forEach(ls.del); S.full = false; S.v = null; S.fresh = 0; S.home = null; S.etag = null; renderHome(); renderRecent(); disconnect(); connect(); loadHome(); toast('Saved prices removed'); closeSheet(); });
+      cache.clear().then(function () { ['recent', 'v', 'fresh', 'full', 'home', 'etag', 'cart'].forEach(ls.del); if (cartCtl) cartCtl.clear(); else paintCartBadge(0); S.full = false; S.v = null; S.fresh = 0; S.home = null; S.etag = null; renderHome(); renderRecent(); disconnect(); connect(); loadHome(); toast('Saved prices removed'); closeSheet(); });
     } });
     sheet(h('div', { class: 'menu' }, [h('h2', { id: 'sheetTitle', text: store().name }), status, prog, dl, rm]));
   }
@@ -522,6 +561,7 @@
   $('scanClose').addEventListener('click', function () { closeScanner(); });
   $('torchBtn').addEventListener('click', function () { if (scanCtl) scanCtl.torch(); });
   $('zoomBtn').addEventListener('click', function () { if (scanCtl) scanCtl.zoom(); });
+  $('cartBtn').addEventListener('click', function () { withCart(function (c) { c.open(); }); });
   $('menuBtn').addEventListener('click', openMenu);
   $('clearRecent').addEventListener('click', function () { ls.del('recent'); renderRecent(); });
   $('sheet').addEventListener('click', function (e) { if (e.target === $('sheet')) closeSheet(); });
@@ -542,11 +582,13 @@
 
   window.addEventListener('storage', function (e) {
     var pfx = 'pt:' + slug + ':';
-    if (e.key === pfx + 'fresh' && e.newValue && +e.newValue > S.fresh) { S.fresh = +e.newValue; refreshSheetMeta(); }
+    if (e.key === pfx + 'fresh' && e.newValue && +e.newValue > S.fresh) { S.fresh = +e.newValue; refreshSheetMeta(); if (cartCtl) cartCtl.onStatus(); }
     else if (e.key === pfx + 'recent') renderRecent();
+    else if (e.key === pfx + 'cart') { paintCartBadge(); if (cartCtl) cartCtl.onStorage(); else if (cartCount() > 0) loadCart().catch(function () { }); }
   });
 
-  renderHome(); renderRecent(); paintStatus();
+  renderHome(); renderRecent(); paintStatus(); paintCartBadge();
+  if (cartCount() > 0) setTimeout(function () { loadCart().catch(function () { }); }, 0);
   connect(); loadHome();
   if ('serviceWorker' in navigator) window.addEventListener('load', function () {
     setTimeout(function () {
@@ -554,5 +596,5 @@
         .then(function (reg) { if (reg.active) reg.active.postMessage({ type: 'shell', url: location.pathname }); }).catch(function () { });
     }, 1500);
   });
-  window.__pt = { state: S, lookup: lookup }; // handy for debugging in the browser console
+  window.__pt = { state: S, lookup: lookup, loadCart: loadCart }; // handy for debugging in the browser console
 })();

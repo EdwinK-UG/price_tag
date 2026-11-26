@@ -74,4 +74,8 @@ progress{width:100%;height:10px}
 .scan-bar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;padding:14px;padding-bottom:max(14px,env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(0,0,0,.7))}
 .scan-bar button{flex:1;min-height:52px;border:1px solid rgba(255,255,255,.5);border-radius:12px;background:rgba(255,255,255,.14);color:#fff;font-weight:600}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:40;max-width:90%;margin:0;padding:10px 16px;border-radius:99px;background:#222;color:#fff;font-size:14px}
+.cart-btn{display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:0 12px;border:1px solid rgba(255,255,255,.45);border-radius:99px;background:rgba(255,255,255,.12);color:inherit;font-size:14px;font-weight:650}
+.cart-cnt{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 6px;border-radius:99px;background:#fff;color:#0b6b4f;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
+.cart-act{margin:14px 0 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cart-act .btn{margin-top:0;flex:1}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}

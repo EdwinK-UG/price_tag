@@ -177,3 +177,14 @@ test('localStorage persistence is per-shop, resilient to corruption and storage 
   assert.deepEqual(Cart.load(broken, 'shop-a'), []);
   assert.equal(Cart.save(broken, 'shop-a', a), false);
 });
+
+test('fingerprint() is order-independent and changes on qty, item, or effective price change', () => {
+  const a = { code: 'A', name: 'Sugar', price: 5500, promos: [{ id: 1, title: 'D', price: 4900, from: 100, to: 500 }], rev: 1, chk: 1, at: 1 };
+  const b = { code: 'B', name: 'Salt', price: 1500, promos: [], rev: 1, chk: 1, at: 1 };
+  const l1 = Cart.addItem(Cart.addItem([], a, 200), b, 200);
+  const l2 = Cart.addItem(Cart.addItem([], b, 200), a, 200);
+  assert.equal(Cart.fingerprint(l1, 200), Cart.fingerprint(l2, 200));
+  assert.notEqual(Cart.fingerprint(l1, 200), Cart.fingerprint(l1, 600)); // offer ended
+  assert.notEqual(Cart.fingerprint(l1, 200), Cart.fingerprint(Cart.setQty(l1, 'B', 2), 200));
+  assert.equal(Cart.fmtCode('K7M9P2'), 'K7M 9P2');
+});

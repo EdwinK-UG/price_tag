@@ -168,8 +168,20 @@
     return { items: items, itemCount: itemCount, lineCount: lines.length, knownTotal: knownTotal, overflow: overflow, unknownCount: unknownCount, staleCount: staleCount, oldestAt: oldestAt < Infinity ? oldestAt : 0, nextBoundary: nextBoundary };
   }
 
+  function fingerprint(lines, now) {
+    return lines.map(function (l) {
+      var e = (!l.unknown && l.price !== null) ? eff(l, now) : { price: null };
+      return l.code + ':' + l.qty + ':' + (e.price === null ? 'u' : e.price);
+    }).sort().join('|');
+  }
+
+  function coKey(slug) { return 'pt:' + slug + ':checkout'; }
+  function loadCo(st, slug) { try { var v = st && st.getItem(coKey(slug)); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+  function saveCo(st, slug, v) { try { if (!st) return; if (v) st.setItem(coKey(slug), JSON.stringify(v)); else st.removeItem(coKey(slug)); } catch (e) { } }
+  function fmtCode(c) { return c && c.length === 6 ? c.slice(0, 3) + ' ' + c.slice(3) : String(c || ''); }
+
   function mount(host) {
-    var h = host.h, lines = load(window.localStorage, host.slug), confirmClear = false, timer = null;
+    var h = host.h, lines = load(window.localStorage, host.slug), confirmClear = false, timer = null, coView = null, coBusy = false, coErr = '';
     function persist() { save(window.localStorage, host.slug, lines); host.onBadge(count(lines)); schedule(); }
     function schedule() {
       clearTimeout(timer);
@@ -181,8 +193,68 @@
       if (r.mutated) { lines = r.lines; persist(); if (host.state.cartOpen) { render(); if (r.changedCount) host.toast('Cart prices updated'); } }
       else schedule();
     }
+    function drawQR(box, code) {
+      var loadQR = window.qrcode ? Promise.resolve() : host.loadScript('/static/vendor/qrcode-generator-1.4.4.js');
+      loadQR.then(function () {
+        if (!box.isConnected) return;
+        box.textContent = '';
+        var qr = window.qrcode(0, 'M'); qr.addData(code); qr.make();
+        var doc = new DOMParser().parseFromString(qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }), 'image/svg+xml');
+        box.appendChild(document.importNode(doc.documentElement, true));
+      }, function () { box.textContent = ''; });
+    }
+    function startCheckout() {
+      if (coBusy || !lines.length) return;
+      coErr = '';
+      var now = host.nowSec(), fp = fingerprint(lines, now), saved = loadCo(window.localStorage, host.slug);
+      var match = saved && saved.fp === fp && saved.expires_at > now;
+      if (!host.state.online) {
+        if (match) { coView = saved; render(); } else { coErr = 'No connection. Connect to create a checkout code.'; render(); }
+        return;
+      }
+      coBusy = true; render();
+      var body = { items: lines.map(function (l) { return { code: l.code, qty: l.qty }; }) };
+      if (match) body.prev_code = saved.code;
+      fetch(host.api + 'checkouts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), credentials: 'omit' })
+        .then(function (res) {
+          return res.text().then(function (t) {
+            var j = null; try { j = t ? JSON.parse(t) : null; } catch (e) { }
+            if (!res.ok) throw new Error((j && j.message) || 'Could not create checkout code (' + res.status + ')');
+            return j;
+          });
+        })
+        .then(function (j) {
+          coBusy = false;
+          var rec = { code: j.code, fp: fp, expires_at: j.expires_at, total: j.total, unknown_count: j.unknown_count || 0 };
+          saveCo(window.localStorage, host.slug, rec);
+          coView = rec; render();
+        }, function (e) {
+          coBusy = false;
+          coErr = (e && e.message) || 'Could not create checkout code. Try again.';
+          render();
+        });
+    }
+    function renderCheckout() {
+      var st = host.store(), cur = st.currency + ' ';
+      var qrBox = h('div', { class: 'co-qr', 'aria-label': 'QR code for ' + coView.code });
+      var nodes = [
+        h('div', { class: 'cart-head' }, h('h2', { id: 'sheetTitle', class: 'cart-title', text: 'Show at the till' })),
+        h('p', { class: 'sub', text: 'Give this code or QR to the cashier.' }),
+        h('div', { class: 'co-code', role: 'status', 'data-code': coView.code, text: fmtCode(coView.code) }),
+        qrBox,
+        h('p', { class: 'co-meta', text: 'Total: ' + cur + host.money(coView.total) + (coView.unknown_count ? ' (+ ' + coView.unknown_count + ' unknown)' : '') }),
+        h('p', { class: 'co-meta', text: 'Valid until ' + host.when(coView.expires_at) }),
+        h('div', { class: 'co-acts' }, [
+          h('button', { class: 'btn ghost', type: 'button', text: 'Back to cart', onclick: function () { coView = null; render(); } }),
+          h('button', { class: 'btn', type: 'button', text: 'Done (clear cart)', onclick: function () { coView = null; clearAll(); host.toast('Cart cleared'); host.closeSheet(); } })
+        ])
+      ];
+      host.sheet(nodes);
+      drawQR(qrBox, coView.code);
+    }
     function render() {
       if (!host.state.cartOpen) return;
+      if (coView) { renderCheckout(); return; }
       var now = host.nowSec(), r = reprice(lines, null, null, now);
       if (r.mutated) { lines = r.lines; save(window.localStorage, host.slug, lines); host.onBadge(count(lines)); }
       var sum = summarize(lines, now, host.state.live, host.state.fresh), st = host.store(), cur = st.currency + ' ', nodes = [];
@@ -206,6 +278,7 @@
       var off = !host.state.online, unc = off || !host.state.live || sum.staleCount > 0;
       if (unc) nodes.push(h('p', { class: 'cart-warn', role: 'status', text: off ? 'No connection. Prices are saved copies and this total may be outdated.' : 'Reconnecting to live prices. This total may be outdated.' }));
       if (sum.unknownCount) nodes.push(h('p', { class: 'cart-warn', role: 'status', text: sum.unknownCount + ' item' + (sum.unknownCount === 1 ? ' has an unknown price and is' : 's have unknown prices and are') + ' excluded from the total.' }));
+      if (coErr) nodes.push(h('p', { class: 'cart-warn', role: 'alert', text: coErr }));
 
       var list = h('ul', { class: 'cart-list' });
       sum.items.forEach(function (e) {
@@ -234,21 +307,24 @@
         unc ? h('p', { class: 'cart-tot-note', text: 'Offline/unverified prices — may be outdated' }) : null,
         sum.unknownCount ? h('p', { class: 'cart-tot-note', text: 'Excludes ' + sum.unknownCount + ' unknown-price item' + (sum.unknownCount === 1 ? '' : 's') }) : null
       ]));
+      if (st.checkout_enabled) {
+        nodes.push(h('button', { class: 'btn co-btn', type: 'button', disabled: coBusy, text: coBusy ? 'Creating code…' : 'Checkout', onclick: startCheckout }));
+      }
       host.sheet(nodes); schedule();
     }
 
     function add(it) {
       if (lines.length >= MAX_LINES && !qtyOf(lines, it.code)) { host.toast('Cart is full (max ' + MAX_LINES + ' products)'); return; }
-      lines = addItem(lines, it, host.nowSec()); confirmClear = false; persist(); render();
+      lines = addItem(lines, it, host.nowSec()); confirmClear = false; coView = null; coErr = ''; persist(); render();
     }
     function addUnk(code, disp) {
       if (lines.length >= MAX_LINES && !qtyOf(lines, code)) { host.toast('Cart is full (max ' + MAX_LINES + ' products)'); return; }
-      lines = addUnknown(lines, code, disp, Date.now()); confirmClear = false; persist(); render();
+      lines = addUnknown(lines, code, disp, Date.now()); confirmClear = false; coView = null; coErr = ''; persist(); render();
     }
-    function setLineQty(code, q) { lines = setQty(lines, code, q); confirmClear = false; persist(); render(); }
-    function removeLine(code) { lines = remove(lines, code); confirmClear = false; persist(); render(); }
-    function clearAll() { lines = clear(); confirmClear = false; persist(); render(); }
-    function open() { confirmClear = false; host.openSheet(); host.state.open = null; host.state.cartOpen = true; render(); }
+    function setLineQty(code, q) { lines = setQty(lines, code, q); confirmClear = false; coView = null; coErr = ''; persist(); render(); }
+    function removeLine(code) { lines = remove(lines, code); confirmClear = false; coView = null; coErr = ''; persist(); render(); }
+    function clearAll() { lines = clear(); confirmClear = false; coView = null; coErr = ''; saveCo(window.localStorage, host.slug, null); persist(); render(); }
+    function open() { confirmClear = false; coView = null; coErr = ''; host.openSheet(); host.state.open = null; host.state.cartOpen = true; render(); }
     function itemBar(it, rerender) {
       var q = qtyOf(lines, it.code);
       if (!q) return h('div', { class: 'cart-act' }, h('button', { class: 'btn cart-add', type: 'button', text: 'Add to cart', onclick: function () { add(it); rerender(); host.toast('Added to cart'); } }));
@@ -267,7 +343,7 @@
       var r = reprice(lines, map, gone, host.nowSec(), { v: v, force: !!(opts && opts.force) });
       if (r.mutated) { lines = r.lines; persist(); if (host.state.cartOpen) { render(); if (r.changedCount) host.toast('Cart prices updated'); } }
     }
-    function onStorage() { lines = load(window.localStorage, host.slug); confirmClear = false; host.onBadge(count(lines)); schedule(); if (host.state.cartOpen) render(); }
+    function onStorage() { lines = load(window.localStorage, host.slug); confirmClear = false; coView = null; host.onBadge(count(lines)); schedule(); if (host.state.cartOpen) render(); }
     host.onBadge(count(lines)); schedule();
     return {
       count: function () { return count(lines); }, qtyOf: function (c) { return qtyOf(lines, c); },
@@ -276,5 +352,5 @@
       onEvents: onEvents, onStatus: function () { if (host.state.cartOpen) render(); }, onStorage: onStorage
     };
   }
-  return { MAX_QTY: MAX_QTY, MAX_LINES: MAX_LINES, eff: eff, load: load, save: save, count: count, qtyOf: qtyOf, addItem: addItem, addUnknown: addUnknown, setQty: setQty, remove: remove, clear: clear, reprice: reprice, summarize: summarize, mount: mount };
+  return { MAX_QTY: MAX_QTY, MAX_LINES: MAX_LINES, eff: eff, load: load, save: save, count: count, qtyOf: qtyOf, addItem: addItem, addUnknown: addUnknown, setQty: setQty, remove: remove, clear: clear, reprice: reprice, summarize: summarize, fingerprint: fingerprint, fmtCode: fmtCode, mount: mount };
 });

@@ -67,9 +67,9 @@
   function field(label, input, hint) { return h('div', null, [h('label', null, [label, hint ? h('small', { text: ' ' + hint }) : null]), input]); }
   function debounce(fn, ms) { var t; return function () { var a = arguments, self = this; clearTimeout(t); t = setTimeout(function () { fn.apply(self, a); }, ms); }; }
 
-  function modal(title, body, actions) {
+  function modal(title, body, actions, onClose) {
     var m = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', onclick: function (e) { if (e.target === m) close(); } }, h('div', null, [h('h2', { text: title }), body, h('div', { class: 'bar' }, actions || [])]));
-    function close() { m.remove(); document.removeEventListener('keydown', esc); }
+    function close() { m.remove(); document.removeEventListener('keydown', esc); if (onClose) onClose(); }
     function esc(e) { if (e.key === 'Escape') close(); }
     document.addEventListener('keydown', esc);
     document.body.appendChild(m);
@@ -103,7 +103,7 @@
   }
 
   // ---- shell + routing ------------------------------------------------------------------------
-  var ROUTES = [['prices', 'Prices'], ['offers', 'Offers'], ['import', 'Import'], ['activity', 'Activity'], ['team', 'Team', 'owner'], ['keys', 'Integrations', 'owner'], ['settings', 'Settings']];
+  var ROUTES = [['prices', 'Prices'], ['offers', 'Offers'], ['checkout', 'Checkout'], ['import', 'Import'], ['activity', 'Activity'], ['team', 'Team', 'owner'], ['keys', 'Integrations', 'owner'], ['settings', 'Settings']];
   var viewBox, navBox, viewerBox, nameBox;
   function start() {
     api('GET', 'me', null, { quiet: true }).then(function (me) {
@@ -129,7 +129,7 @@
     var hash = location.hash.slice(1) || 'prices', parts = hash.split('/'), name = parts[0];
     [].forEach.call(navBox.children, function (a) { if (a.getAttribute('data-r') === (name === 'offer' ? 'offers' : name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     viewBox.textContent = '';
-    var views = { prices: viewPrices, offers: viewOffers, offer: function (b) { viewOfferEditor(b, parts[1]); }, import: viewImport, activity: viewActivity, team: viewTeam, keys: viewKeys, settings: viewSettings };
+    var views = { prices: viewPrices, offers: viewOffers, offer: function (b) { viewOfferEditor(b, parts[1]); }, checkout: viewCheckout, import: viewImport, activity: viewActivity, team: viewTeam, keys: viewKeys, settings: viewSettings };
     (views[name] || viewPrices)(viewBox);
     window.scrollTo(0, 0);
   }
@@ -368,10 +368,169 @@
   }
   function download(blob, name) { var a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000); }
 
+  // ---- checkout (cashier till view) ------------------------------------------------------------------------
+  function viewCheckout(box) {
+    box.appendChild(h('h2', { text: 'Checkout' }));
+    box.appendChild(h('p', { class: 'sub', text: 'Type or scan a shopper\'s 6-character cart code to check items against current prices and mark the order verified.' }));
+    if (!S.settings.checkout_enabled) {
+      box.appendChild(h('p', { class: 'msg warn', text: 'Checkout codes are currently switched off in Settings. Shoppers cannot create new codes until an owner switches them on.' }));
+    }
+    var inp = h('input', { type: 'text', class: 'co-input', maxlength: 12, autocomplete: 'off', placeholder: 'Enter or scan code (e.g. K7M9P2)', 'aria-label': 'Checkout code' });
+    var go = h('button', { class: 'btn primary', type: 'submit', text: 'Look up' });
+    var scanBtn = h('button', { class: 'btn', type: 'button', text: 'Scan QR', hidden: true });
+    var out = h('div');
+    var form = h('form', { class: 'card bar', onsubmit: function (e) { e.preventDefault(); lookupCode(inp.value); } }, [h('div', { class: 'grow' }, inp), go, scanBtn]);
+    box.appendChild(form);
+    box.appendChild(out);
+    inp.focus();
+
+    if (window.BarcodeDetector && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      var gs = BarcodeDetector.getSupportedFormats ? BarcodeDetector.getSupportedFormats() : Promise.resolve(['qr_code']);
+      gs.then(function (f) {
+        if (f.indexOf('qr_code') >= 0) {
+          scanBtn.hidden = false;
+          scanBtn.addEventListener('click', function () { scanQR(function (raw) { inp.value = raw; lookupCode(raw); }); });
+        }
+      }).catch(function () { });
+    }
+
+    function scanQR(onHit) {
+      var video = h('video', { playsinline: true, muted: true, class: 'qr-vid' });
+      var msg = h('p', { class: 'sub', text: 'Point the camera at the shopper\'s QR code.' });
+      var stream = null, timer = null, stopped = false;
+      function stop() { stopped = true; clearTimeout(timer); if (stream) try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { } }
+      var m = modal('Scan checkout QR', h('div', null, [video, msg]), [h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: function () { m.close(); } })], stop);
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false }).then(function (st) {
+        if (stopped) { st.getTracks().forEach(function (t) { t.stop(); }); return; }
+        stream = st; video.srcObject = st; var pl = video.play(); if (pl && pl.catch) pl.catch(function () { });
+        var det = new BarcodeDetector({ formats: ['qr_code'] });
+        function tick() {
+          if (stopped) return;
+          if (video.readyState < 2) { timer = setTimeout(tick, 150); return; }
+          det.detect(video).then(function (rs) {
+            if (stopped) return;
+            if (rs && rs.length && rs[0].rawValue) { m.close(); onHit(rs[0].rawValue); return; }
+            timer = setTimeout(tick, 150);
+          }, function () { timer = setTimeout(tick, 250); });
+        }
+        tick();
+      }, function () { msg.textContent = 'Camera unavailable. Type or scan the code with a barcode reader instead.'; });
+    }
+
+    function lookupCode(raw) {
+      var code = String(raw || '').replace(/[\s-]+/g, '').toUpperCase();
+      if (!code) { inp.focus(); return; }
+      go.disabled = true; out.textContent = '';
+      api('GET', 'checkouts/' + encodeURIComponent(code)).then(function (co) {
+        go.disabled = false; renderCheckout(co);
+      }, function (e) {
+        go.disabled = false;
+        var msg = e.status === 429 ? 'Too many failed lookups. Wait a moment and try again.' : (e.message || 'Checkout code not found or expired.');
+        out.appendChild(h('p', { class: 'msg bad', role: 'alert', text: msg }));
+        inp.select(); inp.focus();
+      });
+    }
+
+    function renderCheckout(co) {
+      var mode = co.default_mode === 'rescan' ? 'rescan' : 'tick';
+      var ticked = {};
+      var cur = S.settings.currency + ' ';
+
+      function paint() {
+        out.textContent = '';
+        var card = h('div', { class: 'card co-card' });
+        var totalUnits = co.items.reduce(function (n, i) { return n + i.qty; }, 0);
+        card.appendChild(h('div', { class: 'bar' }, [
+          h('strong', { class: 'co-badge', text: co.code.slice(0, 3) + ' ' + co.code.slice(3) }),
+          h('span', { class: 'sub co-sub', text: totalUnits + ' item' + (totalUnits === 1 ? '' : 's') + ' · created ' + when(co.created_at) + ' · expires ' + when(co.expires_at) })
+        ]));
+
+        // Mode switcher: shop default applies first; cashier can switch between tick-off and rescan.
+        var modeBar = h('div', { class: 'bar co-modes', role: 'group', 'aria-label': 'Verification mode' }, [
+          h('button', { class: 'btn small' + (mode === 'tick' ? ' primary' : ''), type: 'button', text: 'Tick items off', onclick: function () { mode = 'tick'; paint(); } }),
+          h('button', { class: 'btn small' + (mode === 'rescan' ? ' primary' : ''), type: 'button', text: 'Rescan everything', onclick: function () { mode = 'rescan'; paint(); } })
+        ]);
+        card.appendChild(modeBar);
+
+        if (mode === 'rescan') {
+          card.appendChild(h('p', { class: 'msg warn', text: 'Rescan mode: scan every item at your till (item checkboxes are ignored).' }));
+        }
+        if (co.price_changed_count > 0) {
+          card.appendChild(h('p', { class: 'msg warn', role: 'alert', text: co.price_changed_count + ' item' + (co.price_changed_count === 1 ? ' changed price' : 's changed price') + ' since this code was created. Current prices are shown below.' }));
+        }
+        if (co.unknown_count > 0) {
+          card.appendChild(h('p', { class: 'msg warn', role: 'alert', text: co.unknown_count + ' item' + (co.unknown_count === 1 ? ' is' : 's are') + ' not in the price list and excluded from the total.' }));
+        }
+
+        var checkedCount = 0;
+        var list = h('div', { class: 'list' });
+        co.items.forEach(function (it) {
+          if (ticked[it.code]) checkedCount++;
+          var title = it.name ? (it.name + (it.size ? ' · ' + it.size : '')) : it.display;
+          var subTxt = it.display + ' · qty ' + it.qty;
+          if (it.promo_title) subTxt += ' · Offer: ' + it.promo_title;
+
+          var priceCol = [];
+          if (it.current_price == null) {
+            priceCol.push(h('span', { class: 'err', text: 'Not in price list' }));
+          } else {
+            priceCol.push(h('div', { text: cur + fmt(it.current_line_total) }));
+            priceCol.push(h('small', { class: 'sub', text: it.qty + ' × ' + cur + fmt(it.current_price) }));
+          }
+          if (it.price_changed) {
+            var oldTxt = it.snapshot_price == null ? 'unknown' : (cur + fmt(it.snapshot_price));
+            var newTxt = it.current_price == null ? 'removed' : (cur + fmt(it.current_price));
+            priceCol.push(h('span', { class: 'co-diff', text: 'Shopper saw ' + oldTxt + ' → Now ' + newTxt }));
+          }
+
+          var rowKids = [];
+          if (mode === 'tick') {
+            var cb = h('input', { type: 'checkbox', class: 'co-chk', 'aria-label': 'Check off ' + title });
+            cb.checked = !!ticked[it.code];
+            cb.addEventListener('change', function () { ticked[it.code] = cb.checked; paint(); });
+            rowKids.push(cb);
+          }
+          rowKids.push(h('div', { class: 't' }, [h('b', { text: title }), h('small', { text: subTxt })]));
+          rowKids.push(h('div', { class: 'price' }, priceCol));
+
+          list.appendChild(h('div', { class: 'item co-row' + (mode === 'tick' ? ' has-chk' : '') + (mode === 'tick' && ticked[it.code] ? ' ticked' : '') + (it.price_changed ? ' co-chg' : ''), 'data-code': it.code }, rowKids));
+        });
+        card.appendChild(list);
+
+        if (mode === 'tick') {
+          card.appendChild(h('p', { class: 'sub co-prog', text: 'Checked ' + checkedCount + ' of ' + co.items.length + ' line' + (co.items.length === 1 ? '' : 's') }));
+        }
+
+        var totBox = h('div', { class: 'co-tot' }, [
+          h('div', { class: 'co-tot-row' }, [h('span', { text: 'Current total' }), h('strong', { class: 'co-tot-amt', text: cur + fmt(co.current_total) })]),
+          co.current_total !== co.snapshot_total ? h('p', { class: 'sub', text: 'Shopper\'s cart total at code creation: ' + cur + fmt(co.snapshot_total) }) : null
+        ]);
+        card.appendChild(totBox);
+
+        var verifyBtn = h('button', { class: 'btn primary', type: 'button', text: 'Mark verified / paid' });
+        verifyBtn.addEventListener('click', function () {
+          verifyBtn.disabled = true;
+          api('POST', 'checkouts/' + encodeURIComponent(co.code) + '/verify', { mode: mode }).then(function () {
+            out.textContent = '';
+            out.appendChild(h('p', { class: 'msg ok', role: 'status', text: 'Verified! Code ' + co.code + ' has been marked paid and cannot be reused.' }));
+            inp.value = ''; inp.focus();
+            toast('Checkout ' + co.code + ' verified.');
+          }, function (e) {
+            verifyBtn.disabled = false;
+            out.insertBefore(h('p', { class: 'msg bad', role: 'alert', text: e.message || 'Verification failed' }), out.firstChild);
+          });
+        });
+        card.appendChild(h('div', { class: 'bar' }, [verifyBtn, h('button', { class: 'btn', type: 'button', text: 'Clear', onclick: function () { out.textContent = ''; inp.value = ''; inp.focus(); } })]));
+        out.appendChild(card);
+      }
+      paint();
+    }
+  }
+
   // ---- activity -------------------------------------------------------------------------------------------------
   function viewActivity(box) {
     box.appendChild(h('h2', { text: 'Activity' })); box.appendChild(h('p', { class: 'sub', text: 'Who changed what, and when.' }));
-    var kind = h('select', { 'aria-label': 'Type of activity' }, [['', 'Everything'], ['product', 'Prices & products'], ['promo', 'Offers'], ['import', 'Imports'], ['user', 'Team'], ['token', 'Integrations'], ['settings', 'Settings']].map(function (k) { return h('option', { value: k[0], text: k[1] }); }));
+    var kind = h('select', { 'aria-label': 'Type of activity' }, [['', 'Everything'], ['product', 'Prices & products'], ['promo', 'Offers'], ['checkout', 'Checkouts'], ['import', 'Imports'], ['user', 'Team'], ['token', 'Integrations'], ['settings', 'Settings']].map(function (k) { return h('option', { value: k[0], text: k[1] }); }));
     var list = h('div', { class: 'list' }), more = h('button', { class: 'btn', type: 'button', text: 'Show more', hidden: true }), before = 0;
     function load(reset) {
       if (reset) { before = 0; list.textContent = ''; }
@@ -391,7 +550,7 @@
   // ---- team ---------------------------------------------------------------------------------------------------------
   function viewTeam(box) {
     box.appendChild(h('h2', { text: 'Team' }));
-    box.appendChild(h('p', { class: 'sub', text: 'Owners can do everything. Editors can change prices, products and offers.' }));
+    box.appendChild(h('p', { class: 'sub', text: 'Owners can do everything. Editors can change prices, products, offers and verify checkouts.' }));
     var list = h('div', { class: 'list' });
     function load() {
       api('GET', 'users').then(function (r) {
@@ -465,11 +624,23 @@
     var name = h('input', { type: 'text', value: set.name, maxlength: 80, disabled: !owner }), ann = h('textarea', { maxlength: 200, disabled: !owner, placeholder: 'Optional. For example: Open 8am to 10pm. Free parking.' }); ann.value = set.announcement || '';
     var tzs = h('select', { disabled: !owner }, TZ.map(function (z) { return h('option', { value: String(z[0]), text: z[1], selected: z[0] === set.tz_offset }); }));
     var cur = h('input', { type: 'text', value: set.currency, maxlength: 3, disabled: true }), decs = h('input', { type: 'number', value: set.decimals, disabled: true });
+    var coEn = h('input', { type: 'checkbox', disabled: !owner, id: 'coEnabled' }); coEn.checked = !!set.checkout_enabled;
+    var coTtl = h('input', { type: 'number', min: '5', max: '1440', value: String(set.checkout_ttl_min || 180), disabled: !owner, id: 'coTtl' });
+    var coMode = h('select', { disabled: !owner, id: 'coMode' }, [['tick', 'Tick items off'], ['rescan', 'Rescan everything']].map(function (m) {
+      return h('option', { value: m[0], text: m[1], selected: m[0] === (set.checkout_default_mode || 'tick') });
+    }));
     box.appendChild(h('div', { class: 'card' }, [h('h3', { text: 'Shop details' }), err, field('Shop name', name), field('Announcement', ann, '(shown at the top of your shop page)'), field('Time zone', tzs),
       h('div', { class: 'grid2' }, [field('Currency', cur, '(fixed once you have products)'), field('Decimal places', decs)]),
+      h('h3', { text: 'Scan & Go checkout' }),
+      h('label', null, [coEn, ' Enable checkout codes for shoppers']),
+      h('p', { class: 'sub', text: 'When switched on, shoppers can turn their cart into a 6-character code + QR to show at the till. Off by default.' }),
+      h('div', { class: 'grid2' }, [field('Code expiry (minutes)', coTtl, '(default 180 = 3 hours)'), field('Default cashier mode', coMode)]),
       owner ? h('div', { class: 'bar' }, h('button', { class: 'btn primary', type: 'button', text: 'Save', onclick: function () {
         err.hidden = true;
-        api('PUT', 'settings', { name: name.value, currency: set.currency, decimals: set.decimals, tz_offset: Number(tzs.value), announcement: ann.value }).then(function (s) { S.settings = s; nameBox.textContent = s.name; toast('Saved.'); }, function (e) { err.textContent = e.message; err.hidden = false; });
+        api('PUT', 'settings', {
+          name: name.value, currency: set.currency, decimals: set.decimals, tz_offset: Number(tzs.value), announcement: ann.value,
+          checkout_enabled: coEn.checked, checkout_ttl_min: Number(coTtl.value) || 180, checkout_default_mode: coMode.value
+        }).then(function (s) { S.settings = s; nameBox.textContent = s.name; toast('Saved.'); }, function (e) { err.textContent = e.message; err.hidden = false; });
       } })) : h('p', { class: 'sub', text: 'Only an owner can change these.' })]));
     // shop link & QR poster
     var link = location.origin + '/s/' + encodeURIComponent(slug) + '/', qrBox = h('div', { class: 'poster' });

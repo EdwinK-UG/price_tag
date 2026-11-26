@@ -56,3 +56,16 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 @media print{body>*:not(#printarea){display:none!important}#printarea{display:block!important}}
 #printarea{display:none;text-align:center;font-family:system-ui,sans-serif}
 #printarea h1{font-size:44px;margin:30px 0 6px}#printarea p{font-size:22px}#printarea svg{width:420px;height:420px;margin:24px auto}
+.co-input{font-family:ui-monospace,Consolas,monospace;font-size:20px;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.co-badge{font-family:ui-monospace,Consolas,monospace;font-size:24px;letter-spacing:.08em;padding:4px 12px;border-radius:10px;background:var(--bg);border:1px solid var(--brand)}
+.co-sub{margin:0}
+.co-row.has-chk{grid-template-columns:auto 1fr auto}
+.co-chk{width:24px;height:24px;accent-color:var(--brand);cursor:pointer}
+.co-row.ticked{opacity:.65}
+.co-row.co-chg{background:var(--warn-bg)}
+.co-diff{display:block;margin-top:2px;font-size:12px;font-weight:700;color:var(--warn)}
+.co-prog{margin:10px 0 0}
+.co-tot{margin:14px 0;padding:14px;border-radius:12px;background:var(--bg);border:1px solid var(--line)}
+.co-tot-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:16px}
+.co-tot-amt{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums}
+.qr-vid{width:100%;max-height:300px;border-radius:12px;background:#000;object-fit:cover}

@@ -163,7 +163,7 @@
     if (!cartLoading) {
       if (!document.querySelector('link[href="/static/shopper/cart.css"]')) document.head.appendChild(h('link', { rel: 'stylesheet', href: '/static/shopper/cart.css' }));
       cartLoading = (window.PTCart ? Promise.resolve() : loadScript('/static/shopper/cart.js')).then(function () {
-        cartCtl = window.PTCart.mount({ slug: slug, store: store, money: money, ago: ago, nowSec: nowSec, C: C, h: h, openSheet: openSheet, closeSheet: closeSheet, sheet: sheet, toast: toast, state: S, cache: cache, lookup: lookup, fetchItem: fetchItem, onBadge: paintCartBadge });
+        cartCtl = window.PTCart.mount({ slug: slug, api: API, store: store, money: money, ago: ago, when: when, nowSec: nowSec, C: C, h: h, openSheet: openSheet, closeSheet: closeSheet, sheet: sheet, toast: toast, loadScript: loadScript, state: S, cache: cache, lookup: lookup, fetchItem: fetchItem, onBadge: paintCartBadge });
         return cartCtl;
       }, function (e) { cartLoading = null; throw e; });
     }
@@ -226,7 +226,7 @@
       if (res.status === 304) return;
       if (!res.ok) throw new Error('home ' + res.status);
       S.etag = res.headers.get('etag');
-      return res.json().then(function (j) { S.home = j; ls.set('home', JSON.stringify(j)); if (S.etag) ls.set('etag', S.etag); renderHome(); renderRecent(); if (S.open) refreshSheet(); });
+      return res.json().then(function (j) { S.home = j; ls.set('home', JSON.stringify(j)); if (S.etag) ls.set('etag', S.etag); renderHome(); renderRecent(); if (S.open) refreshSheet(); if (cartCtl) cartCtl.onStatus(); });
     }).catch(function () { /* offline: keep the saved page */ });
   }
 

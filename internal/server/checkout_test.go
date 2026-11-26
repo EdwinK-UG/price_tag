@@ -250,3 +250,122 @@ func TestCheckoutLookupRateLimitsPerIPAndPerStore(t *testing.T) {
 	}
 	_ = context.Background()
 }
+
+func TestAuditModeRecheckMismatchAndOwnerReportAPI(t *testing.T) {
+	e := newEnv(t)
+	a, b := seed(t, e) // a=5500, b=4000
+	pub := e.client()
+	owner := e.adminClient("owner@example.com", "owner-pass-123")
+
+	res, body := owner.post("/api/v1/s/shop/admin/users", map[string]string{
+		"email": "cashier@example.com", "name": "Cashier", "role": "editor", "password": "cashier-pass-123",
+	})
+	if res.StatusCode != 201 {
+		t.Fatalf("create editor: %d %s", res.StatusCode, body)
+	}
+	cashier := e.adminClient("cashier@example.com", "cashier-pass-123")
+
+	// Reject out-of-range audit_rate.
+	res, _ = owner.put("/api/v1/s/shop/admin/settings", map[string]any{
+		"name": "Test Mart", "currency": "UGX", "decimals": 0, "tz_offset": 180,
+		"checkout_enabled": true, "checkout_ttl_min": 180, "checkout_default_mode": "tick",
+		"audit_enabled": true, "audit_rate": 105,
+	})
+	if res.StatusCode != 400 {
+		t.Fatalf("audit_rate=105 want 400, got %d", res.StatusCode)
+	}
+
+	// Enable checkout + 100% audit rate.
+	res, body = owner.put("/api/v1/s/shop/admin/settings", map[string]any{
+		"name": "Test Mart", "currency": "UGX", "decimals": 0, "tz_offset": 180,
+		"checkout_enabled": true, "checkout_ttl_min": 180, "checkout_default_mode": "tick",
+		"audit_enabled": true, "audit_rate": 100,
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("enable audit: %d %s", res.StatusCode, body)
+	}
+
+	// Public /home must NOT reveal audit_enabled or audit_rate to shoppers.
+	res, homeBody := pub.get("/api/v1/s/shop/home")
+	if res.StatusCode != 200 || bytes.Contains(homeBody, []byte("audit")) {
+		t.Fatalf("home leaked audit settings: %s", homeBody)
+	}
+
+	// Shopper creates checkout code -> response must NOT reveal audit_recheck.
+	res, body = pub.do("POST", "/api/v1/s/shop/checkouts", map[string]any{
+		"items": []map[string]any{{"code": a, "qty": 1}},
+	}, nil)
+	if res.StatusCode != 201 || bytes.Contains(body, []byte("audit")) || bytes.Contains(body, []byte("recheck")) {
+		t.Fatalf("create checkout: %d %s", res.StatusCode, body)
+	}
+	var cc store.CheckoutCreated
+	decode(t, body, &cc)
+
+	// Cashier sees audit_recheck=true; repeated lookups return the same flag.
+	res, body = cashier.get("/api/v1/s/shop/admin/checkouts/" + cc.Code)
+	if res.StatusCode != 200 {
+		t.Fatalf("lookup: %d %s", res.StatusCode, body)
+	}
+	var view store.CashierCheckout
+	decode(t, body, &view)
+	if !view.AuditRecheck {
+		t.Fatalf("expected audit_recheck=true: %+v", view)
+	}
+
+	// Verifying flagged order without rescan_confirmed=true is rejected (400).
+	res, body = cashier.post("/api/v1/s/shop/admin/checkouts/"+cc.Code+"/verify", map[string]any{"mode": "tick"})
+	if res.StatusCode != 400 || !bytes.Contains(body, []byte("rescan_required")) {
+		t.Fatalf("verify without rescan_confirmed: want 400 rescan_required, got %d %s", res.StatusCode, body)
+	}
+
+	// Verify with rescan_confirmed=true and a logged mismatch (1x extra product b + formula note).
+	res, body = cashier.post("/api/v1/s/shop/admin/checkouts/"+cc.Code+"/verify", map[string]any{
+		"mode":             "tick", // server must force "rescan"
+		"rescan_confirmed": true,
+		"mismatch": map[string]any{
+			"extra_items": []map[string]any{{"barcode": b, "qty": 2}},
+			"note":        "=1+1 unscanned rice",
+		},
+	})
+	if res.StatusCode != 200 {
+		t.Fatalf("verify with mismatch: %d %s", res.StatusCode, body)
+	}
+	var ver store.CheckoutVerified
+	decode(t, body, &ver)
+	if !ver.AuditRecheck || ver.VerifyMode != "rescan" || !ver.MismatchLogged {
+		t.Fatalf("unexpected verify response: %+v", ver)
+	}
+
+	// Editor is forbidden (403) from Audit Report JSON and CSV.
+	if r, _ := cashier.get("/api/v1/s/shop/admin/audit-report"); r.StatusCode != 403 {
+		t.Fatalf("editor audit-report: want 403, got %d", r.StatusCode)
+	}
+	if r, _ := cashier.get("/api/v1/s/shop/admin/audit-report.csv"); r.StatusCode != 403 {
+		t.Fatalf("editor audit-report.csv: want 403, got %d", r.StatusCode)
+	}
+
+	// Owner gets Audit Report JSON with exact totals (2 * 4000 = 8000 UGX, 100.0% mismatch rate).
+	res, body = owner.get("/api/v1/s/shop/admin/audit-report")
+	if res.StatusCode != 200 {
+		t.Fatalf("owner audit-report: %d %s", res.StatusCode, body)
+	}
+	var rep store.AuditReportData
+	decode(t, body, &rep)
+	if rep.TotalCheckouts != 1 || rep.RecheckedCheckouts != 1 || rep.MismatchCheckouts != 1 || rep.MismatchRatePct != 100.0 || rep.EstimatedMissedValue != 8000 {
+		t.Fatalf("unexpected audit report: %+v", rep)
+	}
+
+	// Invalid date range returns 400.
+	if r, _ := owner.get("/api/v1/s/shop/admin/audit-report?from=2026-05-10&to=2026-05-01"); r.StatusCode != 400 {
+		t.Fatalf("reversed range want 400, got %d", r.StatusCode)
+	}
+
+	// Owner downloads formula-guarded CSV.
+	res, csvBody := owner.get("/api/v1/s/shop/admin/audit-report.csv")
+	if res.StatusCode != 200 || !strings.Contains(res.Header.Get("Content-Type"), "text/csv") {
+		t.Fatalf("owner audit-report.csv: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+	if !bytes.Contains(csvBody, []byte(cc.Code)) || !bytes.Contains(csvBody, []byte("'=1+1 unscanned rice")) {
+		t.Fatalf("csv missing expected guarded content:\n%s", csvBody)
+	}
+}

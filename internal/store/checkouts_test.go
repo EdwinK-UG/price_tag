@@ -59,11 +59,11 @@ func TestSchemaMigrationV1ToV2(t *testing.T) {
 	defer s.Close()
 
 	var sv string
-	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv); err != nil || sv != "2" {
+	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv); err != nil || sv != "3" {
 		t.Fatalf("schema_version = %q, err=%v", sv, err)
 	}
 	set := s.Settings()
-	if set.Name != "Old Shop" || set.CheckoutEnabled || set.CheckoutTTLMin != DefaultCheckoutTTLMin || set.CheckoutDefaultMode != CheckoutModeTick {
+	if set.Name != "Old Shop" || set.CheckoutEnabled || set.CheckoutTTLMin != DefaultCheckoutTTLMin || set.CheckoutDefaultMode != CheckoutModeTick || set.AuditEnabled || set.AuditRate != 0 {
 		t.Fatalf("migrated settings = %+v", set)
 	}
 	it, err := s.Lookup(ctx, "0"+sugar)
@@ -194,14 +194,14 @@ func TestCheckoutLifecycleReusePriceChangeAndVerify(t *testing.T) {
 	}
 
 	// Verify checkout: marks verified, prevents reuse, writes audit trail.
-	ver, err := s.VerifyCheckout(ctx, "clerk@example.com", cc.Code, CheckoutModeTick)
+	ver, err := s.VerifyCheckout(ctx, "clerk@example.com", cc.Code, VerifyCheckoutInput{Mode: CheckoutModeTick})
 	if err != nil || !ver.OK || ver.VerifiedBy != "clerk@example.com" || ver.VerifyMode != CheckoutModeTick {
 		t.Fatalf("verify = %+v %v", ver, err)
 	}
 	if _, err := s.GetCheckoutForCashier(ctx, cc.Code); !errors.Is(err, ErrAlreadyVerified) {
 		t.Fatalf("re-lookup verified want ErrAlreadyVerified, got %v", err)
 	}
-	if _, err := s.VerifyCheckout(ctx, "clerk@example.com", cc.Code, CheckoutModeTick); !errors.Is(err, ErrAlreadyVerified) {
+	if _, err := s.VerifyCheckout(ctx, "clerk@example.com", cc.Code, VerifyCheckoutInput{Mode: CheckoutModeTick}); !errors.Is(err, ErrAlreadyVerified) {
 		t.Fatalf("re-verify want ErrAlreadyVerified, got %v", err)
 	}
 	hist, err := s.ListHistory(ctx, "checkout", cc.Code, 0, 10)
@@ -223,7 +223,7 @@ func TestCheckoutExpiryAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.VerifyCheckout(ctx, "clerk@example.com", verifiedOld.Code, CheckoutModeTick); err != nil {
+	if _, err := s.VerifyCheckout(ctx, "clerk@example.com", verifiedOld.Code, VerifyCheckoutInput{Mode: CheckoutModeTick}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -240,7 +240,7 @@ func TestCheckoutExpiryAndCleanup(t *testing.T) {
 	if _, err := s.GetCheckoutForCashier(ctx, "ZZZZZZ"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing lookup: want ErrNotFound, got %v", err)
 	}
-	if _, err := s.VerifyCheckout(ctx, "clerk@example.com", openExp.Code, CheckoutModeTick); !errors.Is(err, ErrNotFound) {
+	if _, err := s.VerifyCheckout(ctx, "clerk@example.com", openExp.Code, VerifyCheckoutInput{Mode: CheckoutModeTick}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expired verify: want ErrNotFound, got %v", err)
 	}
 

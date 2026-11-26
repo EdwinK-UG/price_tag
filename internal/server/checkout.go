@@ -88,13 +88,12 @@ func (s *Server) getCheckout(w http.ResponseWriter, r *http.Request, st *store.S
 }
 
 // POST /api/v1/s/{slug}/admin/checkouts/{code}/verify
-// Marks a checkout verified/paid so the code cannot be reused, and logs who did
-// it and when in the store's audit trail.
+// Marks a checkout verified/paid so the code cannot be reused, enforces full
+// rescan confirmation on spot-checked orders, optionally logs a mismatch, and
+// records the action in the store's audit trail.
 func (s *Server) verifyCheckout(w http.ResponseWriter, r *http.Request, st *store.Store, u *store.User) {
-	var in struct {
-		Mode string `json:"mode"`
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var in store.VerifyCheckoutInput
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil && !errors.Is(err, io.EOF) {
@@ -106,7 +105,7 @@ func (s *Server) verifyCheckout(w http.ResponseWriter, r *http.Request, st *stor
 		}
 		return
 	}
-	res, err := st.VerifyCheckout(r.Context(), u.Email, r.PathValue("code"), in.Mode)
+	res, err := st.VerifyCheckout(r.Context(), u.Email, r.PathValue("code"), in)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -119,4 +118,38 @@ func (s *Server) verifyCheckout(w http.ResponseWriter, r *http.Request, st *stor
 		return
 	}
 	writeJSON(w, r, 200, res)
+}
+
+// GET /api/v1/s/{slug}/admin/audit-report?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Owner-only summary of verified checkouts, spot-checks, mismatch rate among
+// rechecked orders, and estimated missed value at current prices.
+func (s *Server) auditReport(w http.ResponseWriter, r *http.Request, st *store.Store, u *store.User) {
+	q := r.URL.Query()
+	fromLabel, toLabel, fromUnix, toUnix, err := store.ParseAuditDateRange(q.Get("from"), q.Get("to"), st.Settings().TZOffset, time.Now())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	rep, err := st.AuditReport(r.Context(), fromLabel, toLabel, fromUnix, toUnix, 500)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, r, 200, rep)
+}
+
+// GET /api/v1/s/{slug}/admin/audit-report.csv?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Owner-only CSV export of logged mismatches (formula-injection guarded).
+func (s *Server) auditReportCSV(w http.ResponseWriter, r *http.Request, st *store.Store, u *store.User) {
+	q := r.URL.Query()
+	fromLabel, toLabel, fromUnix, toUnix, err := store.ParseAuditDateRange(q.Get("from"), q.Get("to"), st.Settings().TZOffset, time.Now())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+st.Slug+`-audit-report-`+fromLabel+`-to-`+toLabel+`.csv"`)
+	if err := st.ExportAuditReportCSV(r.Context(), fromLabel, toLabel, fromUnix, toUnix, w); err != nil {
+		s.log.Error("audit csv export", "err", err)
+	}
 }

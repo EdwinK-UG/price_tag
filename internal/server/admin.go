@@ -121,6 +121,8 @@ func (s *Server) adminRoutes() {
 
 	m.HandleFunc("GET "+p+"checkouts/{code}", s.admin("", s.getCheckout))
 	m.HandleFunc("POST "+p+"checkouts/{code}/verify", s.admin("", s.verifyCheckout))
+	m.HandleFunc("GET "+p+"audit-report", s.admin("owner", s.auditReport))
+	m.HandleFunc("GET "+p+"audit-report.csv", s.admin("owner", s.auditReportCSV))
 }
 
 // ---- auth -------------------------------------------------------------------------

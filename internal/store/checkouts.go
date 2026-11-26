@@ -20,6 +20,7 @@ const (
 	MaxCheckoutItems = 200
 	MaxCheckoutQty   = 999
 	MaxOpenCheckouts = 5000
+	MaxMismatchItems = 100
 )
 
 var checkoutAlphaLUT = func() [256]bool {
@@ -82,6 +83,29 @@ func generateCheckoutCode() (string, error) {
 	return string(out[:]), nil
 }
 
+// rollAuditRecheck makes an unbiased one-time server-side decision using
+// crypto/rand whether an order is flagged for a full spot-check rescan.
+func rollAuditRecheck(enabled bool, rate int) (bool, error) {
+	if !enabled || rate <= 0 {
+		return false, nil
+	}
+	if rate >= 100 {
+		return true, nil
+	}
+	const limit = 200 // largest multiple of 100 <= 256
+	var rb [8]byte
+	for {
+		if _, err := rand.Read(rb[:]); err != nil {
+			return false, err
+		}
+		for _, b := range rb {
+			if int(b) < limit {
+				return int(b%100) < rate, nil
+			}
+		}
+	}
+}
+
 // effectiveItemPrice returns min(base, best running offer at now) and the winning offer title.
 func effectiveItemPrice(it *Item, now int64) (price int64, promoTitle string) {
 	price = it.Price
@@ -122,6 +146,8 @@ type CheckoutSnapshotItem struct {
 	UnitPrice *int64 `json:"unit_price"` // nil if not in price list at checkout time
 }
 
+// CheckoutCreated is returned to the shopper. It deliberately NEVER includes
+// audit_recheck so shoppers cannot know in advance whether they were flagged.
 type CheckoutCreated struct {
 	Code         string                 `json:"code"`
 	CreatedAt    int64                  `json:"created_at"`
@@ -153,6 +179,7 @@ type CashierCheckout struct {
 	ExpiresAt         int64                 `json:"expires_at"`
 	Status            string                `json:"status"`
 	DefaultMode       string                `json:"default_mode"`
+	AuditRecheck      bool                  `json:"audit_recheck"`
 	Items             []CashierCheckoutItem `json:"items"`
 	SnapshotTotal     int64                 `json:"snapshot_total"`
 	CurrentTotal      int64                 `json:"current_total"`
@@ -160,12 +187,32 @@ type CashierCheckout struct {
 	PriceChangedCount int                   `json:"price_changed_count"`
 }
 
+type MismatchItemInput struct {
+	Barcode     string `json:"barcode,omitempty"`
+	Description string `json:"description,omitempty"`
+	Qty         int    `json:"qty"`
+}
+
+type CheckoutMismatchInput struct {
+	ExtraItems   []MismatchItemInput `json:"extra_items,omitempty"`
+	MissingItems []MismatchItemInput `json:"missing_items,omitempty"`
+	Note         string              `json:"note,omitempty"`
+}
+
+type VerifyCheckoutInput struct {
+	Mode            string                 `json:"mode,omitempty"`
+	RescanConfirmed bool                   `json:"rescan_confirmed,omitempty"`
+	Mismatch        *CheckoutMismatchInput `json:"mismatch,omitempty"`
+}
+
 type CheckoutVerified struct {
-	OK         bool   `json:"ok"`
-	Code       string `json:"code"`
-	VerifiedAt int64  `json:"verified_at"`
-	VerifiedBy string `json:"verified_by"`
-	VerifyMode string `json:"verify_mode"`
+	OK             bool   `json:"ok"`
+	Code           string `json:"code"`
+	VerifiedAt     int64  `json:"verified_at"`
+	VerifiedBy     string `json:"verified_by"`
+	VerifyMode     string `json:"verify_mode"`
+	AuditRecheck   bool   `json:"audit_recheck"`
+	MismatchLogged bool   `json:"mismatch_logged"`
 }
 
 func sameSnapshot(a, b []CheckoutSnapshotItem) bool {
@@ -318,13 +365,22 @@ func (s *Store) CreateCheckout(ctx context.Context, rawItems []CheckoutItemInput
 	}
 	expiresAt := now + ttlSec
 
+	recheck, err := rollAuditRecheck(set.AuditEnabled, set.AuditRate)
+	if err != nil {
+		return nil, err
+	}
+	recheckInt := 0
+	if recheck {
+		recheckInt = 1
+	}
+
 	var newCode string
 	for attempt := 0; attempt < 8; attempt++ {
 		cand, err := generateCheckoutCode()
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO checkouts(code, created_at, expires_at, status) VALUES(?,?,?,'open')`, cand, now, expiresAt)
+		_, err = tx.ExecContext(ctx, `INSERT INTO checkouts(code, created_at, expires_at, status, audit_recheck) VALUES(?,?,?,'open',?)`, cand, now, expiresAt, recheckInt)
 		if err == nil {
 			newCode = cand
 			break
@@ -376,7 +432,8 @@ func (s *Store) GetCheckoutForCashier(ctx context.Context, rawCode string) (*Cas
 
 	var createdAt, expiresAt int64
 	var status string
-	err = tx.QueryRowContext(ctx, `SELECT created_at, expires_at, status FROM checkouts WHERE code=?`, code).Scan(&createdAt, &expiresAt, &status)
+	var auditRecheck int
+	err = tx.QueryRowContext(ctx, `SELECT created_at, expires_at, status, audit_recheck FROM checkouts WHERE code=?`, code).Scan(&createdAt, &expiresAt, &status, &auditRecheck)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	} else if err != nil {
@@ -409,8 +466,9 @@ func (s *Store) GetCheckoutForCashier(ctx context.Context, rawCode string) (*Cas
 
 	out := &CashierCheckout{
 		Code: code, CreatedAt: createdAt, ExpiresAt: expiresAt, Status: status,
-		DefaultMode: s.Settings().CheckoutDefaultMode,
-		Items:       make([]CashierCheckoutItem, 0, len(snap)),
+		DefaultMode:  s.Settings().CheckoutDefaultMode,
+		AuditRecheck: auditRecheck != 0,
+		Items:        make([]CashierCheckoutItem, 0, len(snap)),
 	}
 	for _, si := range snap {
 		ci := CashierCheckoutItem{
@@ -452,19 +510,78 @@ func (s *Store) GetCheckoutForCashier(ctx context.Context, rawCode string) (*Cas
 	return out, nil
 }
 
+type normalizedMismatchItem struct {
+	kind        string
+	barcode     string
+	description string
+	qty         int
+}
+
+func normalizeMismatch(in *CheckoutMismatchInput) (items []normalizedMismatchItem, note string, err error) {
+	if in == nil {
+		return nil, "", nil
+	}
+	if len(in.ExtraItems) > MaxMismatchItems || len(in.MissingItems) > MaxMismatchItems {
+		return nil, "", invalid("mismatch", "at most %d extra and %d missing items per mismatch", MaxMismatchItems, MaxMismatchItems)
+	}
+	note = strings.TrimSpace(in.Note)
+	if len([]rune(note)) > 300 {
+		return nil, "", invalid("note", "mismatch note is limited to 300 characters")
+	}
+	addList := func(kind string, raw []MismatchItemInput) error {
+		for _, it := range raw {
+			if it.Qty < 1 || it.Qty > MaxCheckoutQty {
+				return invalid("qty", "mismatch quantity must be 1-%d", MaxCheckoutQty)
+			}
+			bc := strings.TrimSpace(it.Barcode)
+			desc := strings.TrimSpace(it.Description)
+			if len([]rune(desc)) > 120 {
+				return invalid("description", "mismatch item description is limited to 120 characters")
+			}
+			if bc == "" && desc == "" {
+				return invalid("mismatch", "each %s item needs a barcode or a description", kind)
+			}
+			if bc != "" {
+				canon, cerr := barcode.Canonical(bc)
+				if cerr != nil {
+					return invalid("barcode", "invalid barcode %q: %v", bc, cerr)
+				}
+				bc = canon
+			}
+			items = append(items, normalizedMismatchItem{kind: kind, barcode: bc, description: desc, qty: it.Qty})
+		}
+		return nil
+	}
+	if err := addList("extra", in.ExtraItems); err != nil {
+		return nil, "", err
+	}
+	if err := addList("missing", in.MissingItems); err != nil {
+		return nil, "", err
+	}
+	if len(items) == 0 && note == "" {
+		return nil, "", invalid("mismatch", "log at least one extra or missing item, or a note")
+	}
+	return items, note, nil
+}
+
 // VerifyCheckout marks an open checkout as verified/paid so the code cannot be
-// reused, and records who verified it and when in the audit trail (history).
-func (s *Store) VerifyCheckout(ctx context.Context, actor, rawCode, mode string) (*CheckoutVerified, error) {
+// reused, enforces full-rescan confirmation on spot-checked orders, optionally
+// stores a mismatch record, and records the action in the audit trail (history).
+func (s *Store) VerifyCheckout(ctx context.Context, actor, rawCode string, in VerifyCheckoutInput) (*CheckoutVerified, error) {
 	code, ok := NormalizeCheckoutCode(rawCode)
 	if !ok {
 		return nil, ErrNotFound
 	}
-	mode = strings.ToLower(strings.TrimSpace(mode))
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	if mode == "" {
 		mode = s.Settings().CheckoutDefaultMode
 	}
 	if mode != CheckoutModeTick && mode != CheckoutModeRescan {
 		return nil, invalid("mode", "verify mode must be tick or rescan")
+	}
+	mmItems, mmNote, err := normalizeMismatch(in.Mismatch)
+	if err != nil {
+		return nil, err
 	}
 
 	s.mu.Lock()
@@ -477,7 +594,8 @@ func (s *Store) VerifyCheckout(ctx context.Context, actor, rawCode, mode string)
 
 	var status string
 	var expiresAt int64
-	err = tx.QueryRowContext(ctx, `SELECT status, expires_at FROM checkouts WHERE code=?`, code).Scan(&status, &expiresAt)
+	var auditRecheck int
+	err = tx.QueryRowContext(ctx, `SELECT status, expires_at, audit_recheck FROM checkouts WHERE code=?`, code).Scan(&status, &expiresAt, &auditRecheck)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	} else if err != nil {
@@ -489,6 +607,14 @@ func (s *Store) VerifyCheckout(ctx context.Context, actor, rawCode, mode string)
 	now := time.Now().Unix()
 	if expiresAt <= now {
 		return nil, ErrNotFound
+	}
+
+	flagged := auditRecheck != 0
+	if flagged {
+		if !in.RescanConfirmed {
+			return nil, invalid("rescan_required", "this order is flagged for full rescan; confirm every item was rescanned")
+		}
+		mode = CheckoutModeRescan
 	}
 
 	snap, err := loadSnapshotItems(ctx, tx, code)
@@ -528,15 +654,57 @@ func (s *Store) VerifyCheckout(ctx context.Context, actor, rawCode, mode string)
 		return nil, ErrAlreadyVerified
 	}
 
+	extraUnits, missingUnits := 0, 0
+	mismatchLogged := in.Mismatch != nil
+	if mismatchLogged {
+		mres, err := tx.ExecContext(ctx, `INSERT INTO checkout_mismatches(code, created_at, actor, note) VALUES(?,?,?,?)`,
+			code, now, actor, mmNote)
+		if err != nil {
+			return nil, err
+		}
+		mid, err := mres.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		ist, err := tx.PrepareContext(ctx, `INSERT INTO checkout_mismatch_items(mismatch_id, kind, barcode, description, qty) VALUES(?,?,?,?,?)`)
+		if err != nil {
+			return nil, err
+		}
+		defer ist.Close()
+		for _, mi := range mmItems {
+			if _, err := ist.ExecContext(ctx, mid, mi.kind, mi.barcode, mi.description, mi.qty); err != nil {
+				return nil, err
+			}
+			if mi.kind == "extra" {
+				extraUnits += mi.qty
+			} else {
+				missingUnits += mi.qty
+			}
+		}
+	}
+
 	set := s.Settings()
-	sum := fmt.Sprintf("Checkout %s verified (%s, %d items, %s %s)", code, mode, itemCount, set.Currency, FormatMoney(currentTotal, set.Decimals))
+	details := mode
+	if flagged {
+		details += ", spot-check"
+	}
+	sum := fmt.Sprintf("Checkout %s verified (%s, %d items, %s %s)", code, details, itemCount, set.Currency, FormatMoney(currentTotal, set.Decimals))
+	if mismatchLogged {
+		sum += fmt.Sprintf(" — MISMATCH: %d extra, %d missing", extraUnits, missingUnits)
+		if mmNote != "" {
+			sum += " (" + mmNote + ")"
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO history(at,actor,kind,ref,summary) VALUES(?,?,?,?,?)`, now, actor, "checkout", code, sum); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &CheckoutVerified{OK: true, Code: code, VerifiedAt: now, VerifiedBy: actor, VerifyMode: mode}, nil
+	return &CheckoutVerified{
+		OK: true, Code: code, VerifiedAt: now, VerifiedBy: actor, VerifyMode: mode,
+		AuditRecheck: flagged, MismatchLogged: mismatchLogged,
+	}, nil
 }
 
 // CleanupExpiredCheckouts deletes expired open checkouts (verified orders are

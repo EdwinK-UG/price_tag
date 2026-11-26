@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	schemaVersion = 2
+	schemaVersion = 3
 	// MaxInline is the most changed items sent inline in one event; bigger
 	// commits (e.g. a nightly price file) send a "reset" hint instead.
 	MaxInline = 50
@@ -80,12 +80,15 @@ type Settings struct {
 	CheckoutEnabled     bool   `json:"checkout_enabled"`
 	CheckoutTTLMin      int    `json:"checkout_ttl_min"`
 	CheckoutDefaultMode string `json:"checkout_default_mode"` // "tick" | "rescan"
+	AuditEnabled        bool   `json:"audit_enabled"`
+	AuditRate           int    `json:"audit_rate"` // 0..100 percentage of checkouts flagged for full rescan
 }
 
 func DefaultSettings(name string) Settings {
 	return Settings{
 		Name: name, Currency: "UGX", Decimals: 0, TZOffset: 180,
 		CheckoutEnabled: false, CheckoutTTLMin: DefaultCheckoutTTLMin, CheckoutDefaultMode: CheckoutModeTick,
+		AuditEnabled: false, AuditRate: 0,
 	}
 }
 
@@ -121,6 +124,8 @@ func (s *Settings) normalize() error {
 		return invalid("checkout_ttl_min", "checkout expiry must be between 5 and 1440 minutes")
 	case s.CheckoutDefaultMode != CheckoutModeTick && s.CheckoutDefaultMode != CheckoutModeRescan:
 		return invalid("checkout_default_mode", "checkout default mode must be tick or rescan")
+	case s.AuditRate < 0 || s.AuditRate > 100:
+		return invalid("audit_rate", "audit rate must be between 0 and 100")
 	}
 	return nil
 }
@@ -239,6 +244,28 @@ CREATE TABLE checkout_items(
 ) WITHOUT ROWID;
 `
 
+const schemaV3SQL = `
+ALTER TABLE checkouts ADD COLUMN audit_recheck INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX checkouts_verified ON checkouts(status, verified_at);
+CREATE TABLE checkout_mismatches(
+  id INTEGER PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE REFERENCES checkouts(code) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  actor TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX checkout_mismatches_created ON checkout_mismatches(created_at);
+CREATE TABLE checkout_mismatch_items(
+  id INTEGER PRIMARY KEY,
+  mismatch_id INTEGER NOT NULL REFERENCES checkout_mismatches(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('extra','missing')),
+  barcode TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  qty INTEGER NOT NULL CHECK(qty >= 1)
+);
+CREATE INDEX checkout_mismatch_items_mid ON checkout_mismatch_items(mismatch_id);
+`
+
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(5000)")
@@ -327,7 +354,7 @@ func Create(dir, slug string, set Settings, ownerEmail, ownerName, ownerPassword
 		r.Close()
 		return fail(err)
 	}
-	_, err = tx.Exec(schemaSQL + schemaV2SQL)
+	_, err = tx.Exec(schemaSQL + schemaV2SQL + schemaV3SQL)
 	if err == nil {
 		_, err = tx.Exec(`INSERT INTO meta(key,value) VALUES('schema_version',?),('v','0'),('home_rev','0'),('purged_before','0'),('settings',?),('created_at',?)`,
 			strconv.Itoa(schemaVersion), string(setJSON), strconv.FormatInt(time.Now().Unix(), 10))
@@ -388,6 +415,8 @@ func (s *Store) migrate(from int) error {
 		switch v {
 		case 1:
 			_, stepErr = tx.Exec(schemaV2SQL)
+		case 2:
+			_, stepErr = tx.Exec(schemaV3SQL)
 		default:
 			stepErr = fmt.Errorf("no migration from schema v%d", v)
 		}

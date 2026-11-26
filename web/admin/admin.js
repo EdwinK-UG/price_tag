@@ -103,7 +103,7 @@
   }
 
   // ---- shell + routing ------------------------------------------------------------------------
-  var ROUTES = [['prices', 'Prices'], ['offers', 'Offers'], ['checkout', 'Checkout'], ['import', 'Import'], ['activity', 'Activity'], ['team', 'Team', 'owner'], ['keys', 'Integrations', 'owner'], ['settings', 'Settings']];
+  var ROUTES = [['prices', 'Prices'], ['offers', 'Offers'], ['checkout', 'Checkout'], ['import', 'Import'], ['activity', 'Activity'], ['audit', 'Audit report', 'owner'], ['team', 'Team', 'owner'], ['keys', 'Integrations', 'owner'], ['settings', 'Settings']];
   var viewBox, navBox, viewerBox, nameBox;
   function start() {
     api('GET', 'me', null, { quiet: true }).then(function (me) {
@@ -129,7 +129,7 @@
     var hash = location.hash.slice(1) || 'prices', parts = hash.split('/'), name = parts[0];
     [].forEach.call(navBox.children, function (a) { if (a.getAttribute('data-r') === (name === 'offer' ? 'offers' : name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     viewBox.textContent = '';
-    var views = { prices: viewPrices, offers: viewOffers, offer: function (b) { viewOfferEditor(b, parts[1]); }, checkout: viewCheckout, import: viewImport, activity: viewActivity, team: viewTeam, keys: viewKeys, settings: viewSettings };
+    var views = { prices: viewPrices, offers: viewOffers, offer: function (b) { viewOfferEditor(b, parts[1]); }, checkout: viewCheckout, import: viewImport, activity: viewActivity, audit: viewAudit, team: viewTeam, keys: viewKeys, settings: viewSettings };
     (views[name] || viewPrices)(viewBox);
     window.scrollTo(0, 0);
   }
@@ -432,8 +432,12 @@
     }
 
     function renderCheckout(co) {
-      var mode = co.default_mode === 'rescan' ? 'rescan' : 'tick';
+      var flagged = !!co.audit_recheck;
+      var mode = flagged ? 'rescan' : (co.default_mode === 'rescan' ? 'rescan' : 'tick');
       var ticked = {};
+      var rescanConfirmed = false;
+      var showMismatch = false;
+      var extraItems = [], missingItems = [], mmNote = '', mmErr = '';
       var cur = S.settings.currency + ' ';
 
       function paint() {
@@ -445,15 +449,21 @@
           h('span', { class: 'sub co-sub', text: totalUnits + ' item' + (totalUnits === 1 ? '' : 's') + ' · created ' + when(co.created_at) + ' · expires ' + when(co.expires_at) })
         ]));
 
-        // Mode switcher: shop default applies first; cashier can switch between tick-off and rescan.
-        var modeBar = h('div', { class: 'bar co-modes', role: 'group', 'aria-label': 'Verification mode' }, [
-          h('button', { class: 'btn small' + (mode === 'tick' ? ' primary' : ''), type: 'button', text: 'Tick items off', onclick: function () { mode = 'tick'; paint(); } }),
-          h('button', { class: 'btn small' + (mode === 'rescan' ? ' primary' : ''), type: 'button', text: 'Rescan everything', onclick: function () { mode = 'rescan'; paint(); } })
-        ]);
-        card.appendChild(modeBar);
-
-        if (mode === 'rescan') {
-          card.appendChild(h('p', { class: 'msg warn', text: 'Rescan mode: scan every item at your till (item checkboxes are ignored).' }));
+        if (flagged) {
+          card.appendChild(h('div', { class: 'co-audit', role: 'alert' }, [
+            h('strong', { text: 'Spot-check: Rescan everything' }),
+            h('p', { text: 'This order was randomly selected for a full recheck. Scan every item at your till — tick-off mode is disabled.' })
+          ]));
+        } else {
+          // Mode switcher: shop default applies first; cashier can switch between tick-off and rescan.
+          var modeBar = h('div', { class: 'bar co-modes', role: 'group', 'aria-label': 'Verification mode' }, [
+            h('button', { class: 'btn small' + (mode === 'tick' ? ' primary' : ''), type: 'button', text: 'Tick items off', onclick: function () { mode = 'tick'; paint(); } }),
+            h('button', { class: 'btn small' + (mode === 'rescan' ? ' primary' : ''), type: 'button', text: 'Rescan everything', onclick: function () { mode = 'rescan'; paint(); } })
+          ]);
+          card.appendChild(modeBar);
+          if (mode === 'rescan') {
+            card.appendChild(h('p', { class: 'msg warn', text: 'Rescan mode: scan every item at your till (item checkboxes are ignored).' }));
+          }
         }
         if (co.price_changed_count > 0) {
           card.appendChild(h('p', { class: 'msg warn', role: 'alert', text: co.price_changed_count + ' item' + (co.price_changed_count === 1 ? ' changed price' : 's changed price') + ' since this code was created. Current prices are shown below.' }));
@@ -484,7 +494,7 @@
           }
 
           var rowKids = [];
-          if (mode === 'tick') {
+          if (!flagged && mode === 'tick') {
             var cb = h('input', { type: 'checkbox', class: 'co-chk', 'aria-label': 'Check off ' + title });
             cb.checked = !!ticked[it.code];
             cb.addEventListener('change', function () { ticked[it.code] = cb.checked; paint(); });
@@ -493,11 +503,11 @@
           rowKids.push(h('div', { class: 't' }, [h('b', { text: title }), h('small', { text: subTxt })]));
           rowKids.push(h('div', { class: 'price' }, priceCol));
 
-          list.appendChild(h('div', { class: 'item co-row' + (mode === 'tick' ? ' has-chk' : '') + (mode === 'tick' && ticked[it.code] ? ' ticked' : '') + (it.price_changed ? ' co-chg' : ''), 'data-code': it.code }, rowKids));
+          list.appendChild(h('div', { class: 'item co-row' + (!flagged && mode === 'tick' ? ' has-chk' : '') + (!flagged && mode === 'tick' && ticked[it.code] ? ' ticked' : '') + (it.price_changed ? ' co-chg' : ''), 'data-code': it.code }, rowKids));
         });
         card.appendChild(list);
 
-        if (mode === 'tick') {
+        if (!flagged && mode === 'tick') {
           card.appendChild(h('p', { class: 'sub co-prog', text: 'Checked ' + checkedCount + ' of ' + co.items.length + ' line' + (co.items.length === 1 ? '' : 's') }));
         }
 
@@ -507,16 +517,96 @@
         ]);
         card.appendChild(totBox);
 
-        var verifyBtn = h('button', { class: 'btn primary', type: 'button', text: 'Mark verified / paid' });
+        // Optional mismatch logger (extra items in trolley / missing items from cart)
+        var mmCount = extraItems.length + missingItems.length + (mmNote.trim() ? 1 : 0);
+        card.appendChild(h('div', { class: 'bar' }, h('button', {
+          class: 'btn small' + (mmCount ? ' danger' : ''), type: 'button', id: 'mmToggle',
+          text: showMismatch ? 'Hide mismatch form' : ('Log mismatch' + (mmCount ? ' (' + (extraItems.length + missingItems.length) + ' item' + (extraItems.length + missingItems.length === 1 ? '' : 's') + ')' : '')),
+          onclick: function () { showMismatch = !showMismatch; mmErr = ''; paint(); }
+        })));
+
+        if (showMismatch) {
+          var mmBox = h('div', { class: 'co-mm', id: 'mmBox' });
+          if (mmErr) mmBox.appendChild(h('p', { class: 'msg bad', role: 'alert', text: mmErr }));
+
+          mmBox.appendChild(h('h4', { text: 'Extra items in trolley (not in shopper\'s cart)' }));
+          var exCode = h('input', { type: 'text', id: 'mmExtraCode', placeholder: 'Barcode (optional)', maxlength: 32 });
+          var exDesc = h('input', { type: 'text', id: 'mmExtraDesc', placeholder: 'Or item description', maxlength: 120 });
+          var exQty = h('input', { type: 'number', id: 'mmExtraQty', min: '1', max: '999', value: '1', 'aria-label': 'Extra item quantity' });
+          mmBox.appendChild(h('div', { class: 'co-mm-row' }, [
+            h('div', { class: 'grow' }, exCode),
+            h('div', { class: 'grow' }, exDesc),
+            exQty,
+            h('button', { class: 'btn small', type: 'button', id: 'mmAddExtra', text: 'Add extra', onclick: function () {
+              var bc = exCode.value.trim(), desc = exDesc.value.trim(), q = parseInt(exQty.value, 10) || 0;
+              if (!bc && !desc) { mmErr = 'Enter a barcode or description for the extra item.'; paint(); return; }
+              if (q < 1 || q > 999) { mmErr = 'Quantity must be between 1 and 999.'; paint(); return; }
+              mmErr = ''; extraItems.push({ barcode: bc, description: desc, qty: q }); paint();
+            } })
+          ]));
+          if (extraItems.length) {
+            var exUl = h('ul', { class: 'co-mm-list' });
+            extraItems.forEach(function (x, idx) {
+              var lbl = (x.barcode ? x.barcode : '') + (x.barcode && x.description ? ' — ' : '') + (x.description || '') + ' × ' + x.qty;
+              exUl.appendChild(h('li', null, [h('span', { text: 'Extra: ' + lbl }), h('button', { class: 'btn small', type: 'button', text: 'Remove', onclick: function () { extraItems.splice(idx, 1); paint(); } })]));
+            });
+            mmBox.appendChild(exUl);
+          }
+
+          mmBox.appendChild(h('h4', { text: 'Missing items (in cart, not in trolley)' }));
+          var misSel = h('select', { id: 'mmMissSelect', 'aria-label': 'Missing item from cart' }, co.items.map(function (it) {
+            return h('option', { value: it.code, text: (it.name || it.display) + ' (' + it.display + ')' });
+          }));
+          var misQty = h('input', { type: 'number', id: 'mmMissQty', min: '1', max: '999', value: '1', 'aria-label': 'Missing item quantity' });
+          mmBox.appendChild(h('div', { class: 'co-mm-row' }, [
+            h('div', { class: 'grow' }, misSel),
+            misQty,
+            h('button', { class: 'btn small', type: 'button', id: 'mmAddMiss', text: 'Add missing', onclick: function () {
+              var q = parseInt(misQty.value, 10) || 0;
+              if (!misSel.value || q < 1 || q > 999) { mmErr = 'Pick a cart item and a quantity between 1 and 999.'; paint(); return; }
+              var chosen = null;
+              co.items.forEach(function (it) { if (it.code === misSel.value) chosen = it; });
+              mmErr = ''; missingItems.push({ barcode: misSel.value, description: chosen ? (chosen.name || chosen.display) : '', qty: q }); paint();
+            } })
+          ]));
+          if (missingItems.length) {
+            var misUl = h('ul', { class: 'co-mm-list' });
+            missingItems.forEach(function (x, idx) {
+              misUl.appendChild(h('li', null, [h('span', { text: 'Missing: ' + (x.description || x.barcode) + ' × ' + x.qty }), h('button', { class: 'btn small', type: 'button', text: 'Remove', onclick: function () { missingItems.splice(idx, 1); paint(); } })]));
+            });
+            mmBox.appendChild(misUl);
+          }
+
+          var noteInp = h('input', { type: 'text', id: 'mmNote', maxlength: 300, value: mmNote, placeholder: 'Optional note (saved to audit report)', 'aria-label': 'Mismatch note' });
+          noteInp.addEventListener('input', function () { mmNote = noteInp.value; });
+          mmBox.appendChild(field('Note', noteInp));
+          card.appendChild(mmBox);
+        }
+
+        if (flagged) {
+          var confCb = h('input', { type: 'checkbox', class: 'co-chk', id: 'rescanConfirm' });
+          confCb.checked = rescanConfirmed;
+          confCb.addEventListener('change', function () { rescanConfirmed = confCb.checked; verifyBtn.disabled = !rescanConfirmed; });
+          card.appendChild(h('label', { class: 'co-confirm', for: 'rescanConfirm' }, [confCb, ' I rescanned every item at the till']));
+        }
+
+        var verifyBtn = h('button', { class: 'btn primary', type: 'button', text: 'Mark verified / paid', disabled: flagged && !rescanConfirmed });
         verifyBtn.addEventListener('click', function () {
           verifyBtn.disabled = true;
-          api('POST', 'checkouts/' + encodeURIComponent(co.code) + '/verify', { mode: mode }).then(function () {
+          var body = { mode: mode, rescan_confirmed: flagged ? rescanConfirmed : false };
+          var trimmedNote = mmNote.trim();
+          if (extraItems.length || missingItems.length || trimmedNote) {
+            body.mismatch = { extra_items: extraItems, missing_items: missingItems, note: trimmedNote };
+          }
+          api('POST', 'checkouts/' + encodeURIComponent(co.code) + '/verify', body).then(function (res) {
             out.textContent = '';
-            out.appendChild(h('p', { class: 'msg ok', role: 'status', text: 'Verified! Code ' + co.code + ' has been marked paid and cannot be reused.' }));
+            var msgTxt = 'Verified! Code ' + co.code + ' has been marked paid and cannot be reused.';
+            if (res && res.mismatch_logged) msgTxt += ' Mismatch logged to the audit report.';
+            out.appendChild(h('p', { class: 'msg ok', role: 'status', text: msgTxt }));
             inp.value = ''; inp.focus();
             toast('Checkout ' + co.code + ' verified.');
           }, function (e) {
-            verifyBtn.disabled = false;
+            verifyBtn.disabled = flagged && !rescanConfirmed;
             out.insertBefore(h('p', { class: 'msg bad', role: 'alert', text: e.message || 'Verification failed' }), out.firstChild);
           });
         });
@@ -525,6 +615,89 @@
       }
       paint();
     }
+  }
+
+  // ---- audit report (owner only) ------------------------------------------------------------------------------
+  function toDateInput(unix) {
+    var d = new Date((unix + tz() * 60) * 1000);
+    return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+  }
+  function viewAudit(box) {
+    box.appendChild(h('h2', { text: 'Audit report' }));
+    box.appendChild(h('p', { class: 'sub', text: 'Spot-check results and logged mismatches. Privacy by design: no shopper identity, device ID, or IP address is stored with orders, so repeat offenders cannot be tracked.' }));
+    if (S.user.role !== 'owner') {
+      box.appendChild(h('p', { class: 'msg bad', role: 'alert', text: 'Only a store owner can view the audit report.' }));
+      return;
+    }
+    var todayUnix = now();
+    var fromInp = h('input', { type: 'date', id: 'auditFrom', value: toDateInput(todayUnix - 29 * 86400), 'aria-label': 'From date' });
+    var toInp = h('input', { type: 'date', id: 'auditTo', value: toDateInput(todayUnix), 'aria-label': 'To date' });
+    var applyBtn = h('button', { class: 'btn primary', type: 'button', text: 'Apply' });
+    var csvLink = h('a', { class: 'btn', id: 'auditCsv', text: 'Download CSV' });
+    var err = h('p', { class: 'msg bad', hidden: true, role: 'alert' });
+    var body = h('div');
+
+    function updateCsvHref() {
+      csvLink.href = API + 'audit-report.csv?from=' + encodeURIComponent(fromInp.value) + '&to=' + encodeURIComponent(toInp.value);
+    }
+    function load() {
+      err.hidden = true;
+      updateCsvHref();
+      body.textContent = '';
+      api('GET', 'audit-report?from=' + encodeURIComponent(fromInp.value) + '&to=' + encodeURIComponent(toInp.value)).then(function (rep) {
+        var cur = rep.currency + ' ';
+        var statBox = h('div', { class: 'stats' }, [
+          h('div', { class: 'stat' }, [h('b', { id: 'audTotal', text: String(rep.total_checkouts) }), h('span', { text: 'Verified checkouts' })]),
+          h('div', { class: 'stat' }, [h('b', { id: 'audRechecked', text: String(rep.rechecked_checkouts) }), h('span', { text: 'Spot-checked' })]),
+          h('div', { class: 'stat' }, [h('b', { id: 'audMismatches', text: String(rep.mismatch_checkouts) }), h('span', { text: 'Mismatches (' + rep.rechecked_mismatch_checkouts + ' on spot-checks)' })]),
+          h('div', { class: 'stat' }, [h('b', { id: 'audRate', text: rep.mismatch_rate_pct.toFixed(1) + '%' }), h('span', { text: 'Mismatch rate (spot-checked)' })]),
+          h('div', { class: 'stat' }, [h('b', { id: 'audMissed', text: cur + fmt(rep.estimated_missed_value) }), h('span', { text: 'Est. missed value (current prices)' + (rep.unpriced_extra_count ? ' · +' + rep.unpriced_extra_count + ' unpriced' : '') })])
+        ]);
+        body.appendChild(statBox);
+
+        body.appendChild(h('h3', { text: 'Logged mismatches (' + rep.from + ' to ' + rep.to + ')' }));
+        if (!rep.mismatches.length) {
+          body.appendChild(h('p', { class: 'sub', text: 'No mismatches logged in this date range.' }));
+          return;
+        }
+        if (rep.mismatches_truncated) {
+          body.appendChild(h('p', { class: 'msg warn', text: 'Showing the most recent 500 mismatches. Download the CSV for the complete list.' }));
+        }
+        var list = h('div', { class: 'list' });
+        rep.mismatches.forEach(function (m) {
+          var ul = h('ul', { class: 'aud-lines' });
+          m.items.forEach(function (it) {
+            var lbl = it.name || it.description || it.display || 'Item';
+            if (it.name && it.description && it.description !== it.name) lbl += ' (' + it.description + ')';
+            var priceTxt = it.current_line_total != null ? (' · ' + cur + fmt(it.current_line_total)) : (it.kind === 'extra' ? ' · unpriced' : '');
+            ul.appendChild(h('li', { text: (it.kind === 'extra' ? 'Extra in trolley: ' : 'Missing from trolley: ') + lbl + ' × ' + it.qty + priceTxt }));
+          });
+          if (m.note) ul.appendChild(h('li', { text: 'Note: ' + m.note }));
+          var head = [
+            h('strong', { text: m.code + ' ' }),
+            m.audit_recheck ? h('span', { class: 'chip bad', text: 'Spot-check' }) : h('span', { class: 'chip', text: m.verify_mode })
+          ];
+          list.appendChild(h('div', { class: 'item' }, [
+            h('div', { class: 't' }, [h('div', null, head), h('small', { text: when(m.verified_at) + ' · ' + m.verified_by }), ul]),
+            h('div', { class: 'price' }, [
+              h('div', { text: cur + fmt(m.estimated_missed_value) }),
+              m.unpriced_extra_count ? h('small', { class: 'sub', text: '+' + m.unpriced_extra_count + ' unpriced' }) : null
+            ])
+          ]));
+        });
+        body.appendChild(list);
+      }, function (e) {
+        err.textContent = e.message || 'Could not load audit report.';
+        err.hidden = false;
+      });
+    }
+    applyBtn.addEventListener('click', load);
+    fromInp.addEventListener('change', updateCsvHref);
+    toInp.addEventListener('change', updateCsvHref);
+    box.appendChild(h('div', { class: 'card bar' }, [field('From', fromInp), field('To', toInp), applyBtn, csvLink]));
+    box.appendChild(err);
+    box.appendChild(body);
+    load();
   }
 
   // ---- activity -------------------------------------------------------------------------------------------------
@@ -629,17 +802,24 @@
     var coMode = h('select', { disabled: !owner, id: 'coMode' }, [['tick', 'Tick items off'], ['rescan', 'Rescan everything']].map(function (m) {
       return h('option', { value: m[0], text: m[1], selected: m[0] === (set.checkout_default_mode || 'tick') });
     }));
+    var audEn = h('input', { type: 'checkbox', disabled: !owner, id: 'auditEnabled' }); audEn.checked = !!set.audit_enabled;
+    var audRate = h('input', { type: 'number', min: '0', max: '100', value: String(set.audit_rate || 0), disabled: !owner, id: 'auditRate' });
     box.appendChild(h('div', { class: 'card' }, [h('h3', { text: 'Shop details' }), err, field('Shop name', name), field('Announcement', ann, '(shown at the top of your shop page)'), field('Time zone', tzs),
       h('div', { class: 'grid2' }, [field('Currency', cur, '(fixed once you have products)'), field('Decimal places', decs)]),
       h('h3', { text: 'Scan & Go checkout' }),
       h('label', null, [coEn, ' Enable checkout codes for shoppers']),
       h('p', { class: 'sub', text: 'When switched on, shoppers can turn their cart into a 6-character code + QR to show at the till. Off by default.' }),
       h('div', { class: 'grid2' }, [field('Code expiry (minutes)', coTtl, '(default 180 = 3 hours)'), field('Default cashier mode', coMode)]),
+      h('h3', { text: 'Random spot-check audits' }),
+      h('label', null, [audEn, ' Enable random spot-check audits']),
+      field('Spot-check rate (%)', audRate, '(0–100; percentage of checkout codes flagged for full till rescan)'),
+      h('p', { class: 'sub', text: 'A higher spot-check rate catches more un-scanned items, but slows down the till. Shoppers are never told in advance whether they were flagged, and repeat offenders cannot be tracked by design (no shopper identity is stored).' }),
       owner ? h('div', { class: 'bar' }, h('button', { class: 'btn primary', type: 'button', text: 'Save', onclick: function () {
         err.hidden = true;
         api('PUT', 'settings', {
           name: name.value, currency: set.currency, decimals: set.decimals, tz_offset: Number(tzs.value), announcement: ann.value,
-          checkout_enabled: coEn.checked, checkout_ttl_min: Number(coTtl.value) || 180, checkout_default_mode: coMode.value
+          checkout_enabled: coEn.checked, checkout_ttl_min: Number(coTtl.value) || 180, checkout_default_mode: coMode.value,
+          audit_enabled: audEn.checked, audit_rate: Number(audRate.value) || 0
         }).then(function (s) { S.settings = s; nameBox.textContent = s.name; toast('Saved.'); }, function (e) { err.textContent = e.message; err.hidden = false; });
       } })) : h('p', { class: 'sub', text: 'Only an owner can change these.' })]));
     // shop link & QR poster

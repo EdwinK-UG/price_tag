@@ -234,3 +234,34 @@ test('cross-tab cart sync and narrow 320 px layout have no horizontal overflow',
   assert.equal(overflow, false, 'cart view overflows 320px viewport');
   await ctx.close();
 });
+
+test('offline-catalogue mode: a bulk price file reprices the cart once the saved list syncs (not left "unverified")', async () => {
+  const { ctx, page } = await phone();
+  // Save the whole price list on the phone
+  await page.click('#menuBtn');
+  await page.click('.menu .btn:not(.ghost)');
+  await page.waitForFunction(() => /Done\. Prices now work/.test(document.querySelector('.menu .sub').textContent), null, { timeout: 15000 });
+  await page.click('.sheet-card .close');
+
+  const oil = demoItem('Cooking oil', '3 L');
+  await look(page, oil.code);
+  await page.waitForSelector('.cart-add');
+  await page.click('.cart-add');
+  await page.click('.sheet-card .close');
+
+  // The shop pushes a big price file (> 50 changed rows => one "reset" hint, no inline items)
+  const { withCheck } = require('./helpers.js');
+  const np = oil.price + 1500;
+  const rows = ['barcode,name,size,category,price', `${oil.code},Cooking oil,3 L,Pantry,${np}`];
+  for (let i = 0; i < 80; i++) rows.push(`${withCheck('24' + String(i).padStart(10, '0'))},Bulk ${i},,Bulk,${1000 + i}`);
+  const r = await fetch(srv.url + '/api/v1/s/demo/ingest', { method: 'POST', headers: { Authorization: 'Bearer ' + srv.token, 'Content-Type': 'text/csv' }, body: rows.join('\n') });
+  assert.equal(r.status, 200);
+
+  await page.click('#cartBtn');
+  await page.waitForSelector('.cart-list');
+  await page.waitForFunction((t) => (document.querySelector('.cart-tot-amt') || {}).textContent === 'UGX ' + t, np.toLocaleString('en-US'), { timeout: 10000 });
+  assert.match(await page.textContent('.cart-list'), /Price changed/);
+  assert.equal(await page.$('.cart-tot.stale'), null, 'total must be live, not marked outdated');
+  assert.equal(await page.$('.cart-age'), null, 'no "unverified" label once the saved list is in sync');
+  await ctx.close();
+});

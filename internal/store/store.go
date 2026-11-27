@@ -411,6 +411,17 @@ func (s *Store) migrate(from int) error {
 		if err != nil {
 			return err
 		}
+		// Re-read the version under the write lock: another process (a second
+		// server, or a CLI command) may have migrated this file meanwhile.
+		var raw string
+		if err := tx.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&raw); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if cur, _ := strconv.Atoi(raw); cur > v {
+			tx.Rollback()
+			continue
+		}
 		var stepErr error
 		switch v {
 		case 1:

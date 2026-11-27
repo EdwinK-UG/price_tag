@@ -19,7 +19,7 @@ const (
 	checkoutCodeLen  = 6
 	MaxCheckoutItems = 200
 	MaxCheckoutQty   = 999
-	MaxOpenCheckouts = 5000
+	MaxOpenCheckouts = 20000 // shop-wide safety cap; per-client limits live in the server
 	MaxMismatchItems = 100
 )
 
@@ -259,6 +259,17 @@ func loadSnapshotItems(ctx context.Context, q querier, code string) ([]CheckoutS
 // random 6-character code. If prevCode refers to an open, unexpired checkout
 // with the exact same items/quantities/prices, it returns that same code.
 func (s *Store) CreateCheckout(ctx context.Context, rawItems []CheckoutItemInput, prevCode string) (*CheckoutCreated, error) {
+	return s.createCheckout(ctx, rawItems, prevCode, true)
+}
+
+// ReuseCheckout returns prevCode's checkout when the cart is unchanged and the
+// code is still open, and ErrNotFound when a new code would be needed. It never
+// creates a code, so it is safe to serve to a client that is out of allowance.
+func (s *Store) ReuseCheckout(ctx context.Context, rawItems []CheckoutItemInput, prevCode string) (*CheckoutCreated, error) {
+	return s.createCheckout(ctx, rawItems, prevCode, false)
+}
+
+func (s *Store) createCheckout(ctx context.Context, rawItems []CheckoutItemInput, prevCode string, allowNew bool) (*CheckoutCreated, error) {
 	set := s.Settings()
 	if !set.CheckoutEnabled {
 		return nil, ErrCheckoutDisabled
@@ -351,6 +362,9 @@ func (s *Store) CreateCheckout(ctx context.Context, rawItems []CheckoutItemInput
 		}
 	}
 
+	if !allowNew {
+		return nil, ErrNotFound
+	}
 	var openCount int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM checkouts WHERE status='open'`).Scan(&openCount); err != nil {
 		return nil, err

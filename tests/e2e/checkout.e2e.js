@@ -132,6 +132,11 @@ test('cashier (editor role) sees price changes, ticks items off, verifies order,
   assert.equal((await clerk.page.$$('.co-chk')).length, 2);
   await clerk.page.click('.co-chk >> nth=0');
   assert.match(await clerk.page.textContent('.co-prog'), /Checked 1 of 2/);
+  // Tick-off mode only lets the order be marked paid once EVERY line is ticked
+  assert.equal(await clerk.page.isDisabled('button:has-text("Mark verified / paid")'), true, 'verify must be blocked with 1 of 2 ticked');
+  await clerk.page.click('.co-chk >> nth=1');
+  assert.match(await clerk.page.textContent('.co-prog'), /Checked 2 of 2/);
+  assert.equal(await clerk.page.isDisabled('button:has-text("Mark verified / paid")'), false);
 
   // Mark verified / paid
   await clerk.page.click('button:has-text("Mark verified / paid")');
@@ -142,7 +147,7 @@ test('cashier (editor role) sees price changes, ticks items off, verifies order,
   await clerk.page.fill('.co-input', code);
   await clerk.page.click('button:has-text("Look up")');
   await clerk.page.waitForSelector('.msg.bad');
-  assert.match(await clerk.page.textContent('.msg.bad'), /already been verified/i);
+  assert.match(await clerk.page.textContent('.msg.bad'), /not found, expired or already used/i);
 
   // Audit trail records who verified and when
   await clerk.page.click('nav a[href="#activity"]');

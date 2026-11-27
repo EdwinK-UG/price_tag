@@ -507,8 +507,10 @@
         });
         card.appendChild(list);
 
+        var allTicked = checkedCount >= co.items.length;
         if (!flagged && mode === 'tick') {
-          card.appendChild(h('p', { class: 'sub co-prog', text: 'Checked ' + checkedCount + ' of ' + co.items.length + ' line' + (co.items.length === 1 ? '' : 's') }));
+          card.appendChild(h('p', { class: 'sub co-prog', text: 'Checked ' + checkedCount + ' of ' + co.items.length + ' line' + (co.items.length === 1 ? '' : 's') +
+            (allTicked ? '' : '. Tick every line to finish, or switch to Rescan everything.') }));
         }
 
         var totBox = h('div', { class: 'co-tot' }, [
@@ -586,11 +588,13 @@
         if (flagged) {
           var confCb = h('input', { type: 'checkbox', class: 'co-chk', id: 'rescanConfirm' });
           confCb.checked = rescanConfirmed;
-          confCb.addEventListener('change', function () { rescanConfirmed = confCb.checked; verifyBtn.disabled = !rescanConfirmed; });
+          confCb.addEventListener('change', function () { rescanConfirmed = confCb.checked; verifyBtn.disabled = blocked(); });
           card.appendChild(h('label', { class: 'co-confirm', for: 'rescanConfirm' }, [confCb, ' I rescanned every item at the till']));
         }
 
-        var verifyBtn = h('button', { class: 'btn primary', type: 'button', text: 'Mark verified / paid', disabled: flagged && !rescanConfirmed });
+        // Flagged orders need the rescan confirmation; tick mode needs every line ticked.
+        function blocked() { return flagged ? !rescanConfirmed : (mode === 'tick' && !allTicked); }
+        var verifyBtn = h('button', { class: 'btn primary', type: 'button', text: 'Mark verified / paid', disabled: blocked() });
         verifyBtn.addEventListener('click', function () {
           verifyBtn.disabled = true;
           var body = { mode: mode, rescan_confirmed: flagged ? rescanConfirmed : false };
@@ -606,7 +610,7 @@
             inp.value = ''; inp.focus();
             toast('Checkout ' + co.code + ' verified.');
           }, function (e) {
-            verifyBtn.disabled = flagged && !rescanConfirmed;
+            verifyBtn.disabled = blocked();
             out.insertBefore(h('p', { class: 'msg bad', role: 'alert', text: e.message || 'Verification failed' }), out.firstChild);
           });
         });

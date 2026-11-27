@@ -36,6 +36,11 @@ type Config struct {
 	// carriers in East Africa put many phones behind one IP, so keep it generous.
 	PublicRPS   float64
 	PublicBurst int
+	// CheckoutCodesPerIP caps how many checkout codes one client IP can create
+	// for one shop within about a checkout lifetime (3 h). It stops a single
+	// client from filling the shop-wide open-code cap and blocking checkout for
+	// everyone; it is sized for a whole shop sharing one Wi-Fi IP.
+	CheckoutCodesPerIP int
 }
 
 type Server struct {
@@ -46,7 +51,7 @@ type Server struct {
 	mux    *http.ServeMux
 
 	rlPublic, rlCatalog, rlLogin, rlAccount, rlAdmin, rlIngest, rlOperator *limiter
-	rlCheckoutCreate, rlCheckoutIP, rlCheckoutStore                        *limiter
+	rlCheckoutCreate, rlCheckoutIP, rlCheckoutStore, rlCheckoutWindow      *limiter
 
 	sseMu sync.Mutex
 	sseIP map[string]int
@@ -75,6 +80,9 @@ func New(cfg Config) (*Server, error) {
 		cfg.PublicBurst = 400
 	}
 	sweepStaleExports(cfg.DataDir, cfg.Logger)
+	if cfg.CheckoutCodesPerIP <= 0 {
+		cfg.CheckoutCodesPerIP = 2000
+	}
 	st, err := loadStatic(web.FS)
 	if err != nil {
 		return nil, err
@@ -83,7 +91,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{
 		cfg: cfg, log: cfg.Logger, reg: NewRegistry(cfg.DataDir, cfg.Logger), static: st, mux: http.NewServeMux(),
 		rlPublic:         newLimiter(cfg.PublicRPS, cfg.PublicBurst),
-		rlCatalog:        newLimiter(1.0/300, 6), // ~12 full downloads/hour/IP
+		rlCatalog:        newLimiter(1.0/10, 30), // generous: a whole shop shares one IP; full downloads are cached per version
 		rlLogin:          newLimiter(1.0/6, 10),  // per IP+store
 		rlAccount:        newLimiter(1.0/30, 8),  // per account: slows guessing without hard lock-out
 		rlAdmin:          newLimiter(30, 120),
@@ -92,6 +100,8 @@ func New(cfg Config) (*Server, error) {
 		rlCheckoutCreate: newLimiter(2, 30),     // per IP+store: shop Wi-Fi sized
 		rlCheckoutIP:     newLimiter(1.0/2, 20), // per IP+store failed lookups
 		rlCheckoutStore:  newLimiter(1, 40),     // per store failed lookups
+		// per IP+store, ~a checkout lifetime: at most CheckoutCodesPerIP new codes, refilling over 3 h
+		rlCheckoutWindow: newLimiter(float64(cfg.CheckoutCodesPerIP)/(3*3600), cfg.CheckoutCodesPerIP),
 		sseIP:            map[string]int{},
 		ctx:              ctx, cancel: cancel, start: time.Now(),
 	}
@@ -108,6 +118,9 @@ func New(cfg Config) (*Server, error) {
 				for _, l := range []*limiter{s.rlPublic, s.rlCatalog, s.rlLogin, s.rlAccount, s.rlAdmin, s.rlIngest, s.rlOperator, s.rlCheckoutCreate, s.rlCheckoutIP, s.rlCheckoutStore} {
 					l.gc(15 * time.Minute)
 				}
+				// A long-window bucket must outlive its refill time (3 h), or forgetting
+				// it early would hand a paused client a fresh allowance.
+				s.rlCheckoutWindow.gc(4 * time.Hour)
 			}
 		}
 	}()

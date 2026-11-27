@@ -37,7 +37,24 @@ func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in, 64<<10) {
 		return
 	}
-	cc, err := st.CreateCheckout(r.Context(), in.Items, in.PrevCode)
+	// Each client (IP) may open a bounded number of codes per checkout lifetime,
+	// so no single client can fill the shop-wide cap. Showing an existing code
+	// again (unchanged cart) is always allowed and never counts.
+	winKey := slug + "|" + s.clientIP(r)
+	var cc *store.CheckoutCreated
+	if ok, _ := s.rlCheckoutWindow.allow(winKey); ok {
+		cc, err = st.CreateCheckout(r.Context(), in.Items, in.PrevCode)
+		if err != nil || cc.Reused {
+			s.rlCheckoutWindow.refund(winKey) // only newly opened codes count
+		}
+	} else {
+		cc, err = st.ReuseCheckout(r.Context(), in.Items, in.PrevCode)
+		if errors.Is(err, store.ErrNotFound) {
+			w.Header().Set("Retry-After", "600")
+			writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many checkout codes from this network; please try again later")
+			return
+		}
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrCheckoutDisabled):
@@ -56,10 +73,16 @@ func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, status, cc)
 }
 
+// checkoutNotFound is the ONE answer for a code that is invalid, unknown,
+// expired or already used, so a lookup reveals nothing about which it was.
+func checkoutNotFound(w http.ResponseWriter) {
+	writeErr(w, 404, "not_found", "checkout code not found, expired or already used")
+}
+
 // GET /api/v1/s/{slug}/admin/checkouts/{code}
 // Cashier lookup: throttled per IP and per shop on failed/invalid lookups so
-// codes cannot be guessed. Invalid, nonexistent, and expired codes return the
-// exact same 404 response.
+// codes cannot be guessed. Invalid, nonexistent, expired and already-used codes
+// return the exact same 404 response.
 func (s *Server) getCheckout(w http.ResponseWriter, r *http.Request, st *store.Store, u *store.User) {
 	ipKey := st.Slug + "|" + s.clientIP(r)
 	if !s.limit(w, s.rlCheckoutIP, ipKey) {
@@ -71,12 +94,9 @@ func (s *Server) getCheckout(w http.ResponseWriter, r *http.Request, st *store.S
 	}
 	co, err := st.GetCheckoutForCashier(r.Context(), r.PathValue("code"))
 	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			writeErr(w, 404, "not_found", "checkout code not found or expired")
-		case errors.Is(err, store.ErrAlreadyVerified):
-			writeErr(w, 409, "already_verified", "this checkout code has already been verified")
-		default:
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrAlreadyVerified) {
+			checkoutNotFound(w)
+		} else {
 			s.fail(w, r, err)
 		}
 		return
@@ -107,12 +127,9 @@ func (s *Server) verifyCheckout(w http.ResponseWriter, r *http.Request, st *stor
 	}
 	res, err := st.VerifyCheckout(r.Context(), u.Email, r.PathValue("code"), in)
 	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			writeErr(w, 404, "not_found", "checkout code not found or expired")
-		case errors.Is(err, store.ErrAlreadyVerified):
-			writeErr(w, 409, "already_verified", "this checkout code has already been verified")
-		default:
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrAlreadyVerified) {
+			checkoutNotFound(w)
+		} else {
 			s.fail(w, r, err)
 		}
 		return

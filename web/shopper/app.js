@@ -418,12 +418,12 @@
         renderRecent();
         if (openCode && S.open === openCode) lookup(openCode, 'restore');
         if (cartCodes().length) revalidateVisible(true);
-        if (S.full) syncCatalog(true).catch(function () { });
+        if (S.full) syncCatalog(true).then(afterCatalogSync, function () { });
       });
       loadHomeSoon(); return;
     }
     if (S.v != null && ev.v <= S.v) { if (S.es && !S.live) { S.live = true; paintStatus(); } return; } // duplicate
-    var gap = S.v != null && ev.p !== S.v;
+    var gap = S.v != null && ev.p !== S.v, prevV = S.v;
     if (gap || ev.reset) S.fresh = ev.v;                            // we cannot vouch for older cached items any more
     S.v = ev.v;
     if (S.es && !S.live) { S.live = true; paintStatus(); }
@@ -443,10 +443,38 @@
     if (cartCount() > 0 && (items.length || gone.length)) withCart(function (c) { c.onEvents(items, gone, ev.v); });
     Promise.all(work).then(function () { renderRecent(); });
     saveMeta();
-    if (ev.reset && S.full) syncCatalog(false).catch(function () { });
+    // Offline-catalogue mode: fetch what changed since the version we HAD (not the
+    // new one, which would return nothing), then push it to what the shopper sees.
+    if ((ev.reset || gap) && S.full) syncCatalog(false, null, prevV).then(afterCatalogSync, function () { revalidateVisible(); });
     else if (gap || ev.reset) revalidateVisible();                // a bulk change: re-check what the shopper can see
     if (ev.home || ev.reset) loadHomeSoon();
     refreshSheetMeta();
+  }
+
+  // In offline-catalogue mode a completed sync leaves the phone's copy equal to the
+  // shop's list at version S.v. Push that into what the shopper can see: the cart
+  // (repriced, with "price changed" markers), the open item and the recents.
+  function afterCatalogSync() {
+    var v = S.v || 0;
+    renderRecent();
+    if (S.open) {
+      var oc = S.open;
+      cache.get(oc).then(function (it) {
+        if (S.open !== oc) return;
+        if (it) { it.chk = Math.max(it.chk || 0, v); sheetItem = it; renderItem(it); }
+        else message('No longer listed', 'This product was just removed from the shop\'s price list. Ask staff for the price.');
+      });
+    }
+    var codes = cartCodes();
+    if (!codes.length) return;
+    Promise.all(codes.map(function (c) { return cache.get(c); })).then(function (arr) {
+      var items = [], gone = [];
+      arr.forEach(function (it, i) {
+        if (it) items.push(Object.assign({}, it, { chk: Math.max(it.chk || 0, v) }));
+        else gone.push(codes[i]);
+      });
+      withCart(function (c) { c.onEvents(items, gone, v); });
+    });
   }
 
   // After a bulk change (e.g. the nightly price file) we do not know which cached
@@ -476,8 +504,9 @@
   }
 
   // ---- offline catalogue (opt-in) -------------------------------------------------------------------------------------
-  function syncCatalog(fresh, onProgress) {
-    var since = fresh || S.v == null ? '' : '?since=' + S.v, n = 0, hdr = null, batch = [], buf = '', dec = window.TextDecoder ? new TextDecoder() : null;
+  function syncCatalog(fresh, onProgress, sinceV) {
+    var from = sinceV != null ? sinceV : S.v;
+    var since = fresh || from == null ? '' : '?since=' + from, n = 0, hdr = null, batch = [], buf = '', dec = window.TextDecoder ? new TextDecoder() : null;
     function flush() { var b = batch; batch = []; return cache.put(b); }
     function line(l) {
       if (!l) return Promise.resolve();
@@ -513,7 +542,7 @@
     var dl = h('button', { class: 'btn', type: 'button', text: S.full ? 'Update saved prices' : 'Save prices for offline use', onclick: function () {
       dl.disabled = true; prog.hidden = false; status.textContent = 'Downloading…';
       syncCatalog(!S.full, function (n, t) { prog.max = t || n; prog.value = n; status.textContent = 'Saving ' + n.toLocaleString() + (t ? ' of ' + t.toLocaleString() : '') + ' products…'; })
-        .then(function () { status.textContent = 'Done. Prices now work without a connection.'; prog.hidden = true; dl.disabled = false; dl.textContent = 'Update saved prices'; renderRecent(); })
+        .then(function () { loadCart().catch(function () { }); status.textContent = 'Done. Prices now work without a connection.'; prog.hidden = true; dl.disabled = false; dl.textContent = 'Update saved prices'; renderRecent(); })
         .catch(function () { status.textContent = 'The download did not finish. Try again on a better connection.'; prog.hidden = true; dl.disabled = false; });
     } });
     var rm = h('button', { class: 'btn ghost', type: 'button', text: 'Forget everything saved on this phone', onclick: function () {

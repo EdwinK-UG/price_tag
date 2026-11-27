@@ -23,6 +23,52 @@ func enableCheckout(t testing.TB, s *Store, ttl int, mode string) {
 	}
 }
 
+// Two processes (a server and a CLI command, say) opening the same old file at
+// the same moment must both succeed: the second must not re-run a migration.
+func TestConcurrentOpensMigrateOnce(t *testing.T) {
+	for round := 0; round < 5; round++ {
+		dir := t.TempDir()
+		w, r, err := openDB(DBPath(dir, "legacy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Exec(schemaSQL); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Exec(`INSERT INTO meta(key,value) VALUES('schema_version','1'),('v','0'),('home_rev','0'),('purged_before','0'),('settings','{"name":"Old Shop","currency":"UGX","decimals":0,"tz_offset":180}'),('created_at','1700000000')`); err != nil {
+			t.Fatal(err)
+		}
+		w.Close()
+		r.Close()
+		const n = 4
+		errs := make(chan error, n)
+		stores := make(chan *Store, n)
+		start := make(chan struct{})
+		for i := 0; i < n; i++ {
+			go func() {
+				<-start
+				s, err := Open(dir, "legacy")
+				errs <- err
+				stores <- s
+			}()
+		}
+		close(start)
+		for i := 0; i < n; i++ {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: concurrent open failed: %v", round, err)
+			}
+			if s := <-stores; s != nil {
+				var sv string
+				s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv)
+				if sv != "3" {
+					t.Fatalf("schema_version %q", sv)
+				}
+				s.Close()
+			}
+		}
+	}
+}
+
 func TestSchemaMigrationV1ToV2(t *testing.T) {
 	dir := t.TempDir()
 	path := DBPath(dir, "legacy")

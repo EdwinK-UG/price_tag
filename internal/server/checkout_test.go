@@ -144,12 +144,13 @@ func TestCheckoutAPILifecyclePermissionsAndAudit(t *testing.T) {
 		t.Fatalf("unexpected verify response: %+v", ver)
 	}
 
-	// Code cannot be reused on lookup or verify (409).
-	if res, _ := cashier.get("/api/v1/s/shop/admin/checkouts/" + cc.Code); res.StatusCode != 409 {
-		t.Fatalf("re-lookup verified: want 409, got %d", res.StatusCode)
+	// A used code cannot be reused, and answers exactly like an unknown code.
+	_, missBody := cashier.get("/api/v1/s/shop/admin/checkouts/ZZZZZZ")
+	if res, b := cashier.get("/api/v1/s/shop/admin/checkouts/" + cc.Code); res.StatusCode != 404 || !bytes.Equal(b, missBody) {
+		t.Fatalf("re-lookup verified: want the same 404 as an unknown code, got %d %s", res.StatusCode, b)
 	}
-	if res, _ := cashier.post("/api/v1/s/shop/admin/checkouts/"+cc.Code+"/verify", map[string]string{"mode": "tick"}); res.StatusCode != 409 {
-		t.Fatalf("re-verify: want 409, got %d", res.StatusCode)
+	if res, b := cashier.post("/api/v1/s/shop/admin/checkouts/"+cc.Code+"/verify", map[string]string{"mode": "tick"}); res.StatusCode != 404 || !bytes.Equal(b, missBody) {
+		t.Fatalf("re-verify: want the same 404 as an unknown code, got %d %s", res.StatusCode, b)
 	}
 
 	// Audit trail records cashier and code.
@@ -194,6 +195,62 @@ func TestCheckoutFailedAndExpiredLookIdentical(t *testing.T) {
 	}
 	if !bytes.Equal(bBad, bMiss) || !bytes.Equal(bMiss, bExp) {
 		t.Fatalf("failed and expired responses must match:\n bad=%s\n miss=%s\n exp=%s", bBad, bMiss, bExp)
+	}
+}
+
+// One client must not be able to fill the shop-wide open-code cap and block
+// checkout for every other shopper.
+func TestCheckoutCodesPerClientAreCapped(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.CheckoutCodesPerIP = 3 })
+	a, b := seed(t, e)
+	owner := e.adminClient("owner@example.com", "owner-pass-123")
+	enableShopCheckout(t, owner, "tick")
+	pub := e.client()
+	create := func(qty int, prev string) (int, store.CheckoutCreated) {
+		res, body := pub.do("POST", "/api/v1/s/shop/checkouts", map[string]any{"items": []map[string]any{{"code": a, "qty": qty}}, "prev_code": prev}, nil)
+		var cc store.CheckoutCreated
+		if res.StatusCode < 300 {
+			decode(t, body, &cc)
+		}
+		return res.StatusCode, cc
+	}
+	var last store.CheckoutCreated
+	for q := 1; q <= 3; q++ {
+		st, cc := create(q, "")
+		if st != 201 {
+			t.Fatalf("code %d: status %d", q, st)
+		}
+		last = cc
+	}
+	// Re-tapping Checkout on an unchanged cart reuses the code and costs nothing.
+	if st, cc := create(3, last.Code); st != 200 || !cc.Reused || cc.Code != last.Code {
+		t.Fatalf("reuse: %d %+v", st, cc)
+	}
+	if st, _ := create(9, ""); st != 429 {
+		t.Fatalf("4th new code from one client: want 429, got %d", st)
+	}
+	// Invalid carts (rejected before a code exists) don't eat the allowance either.
+	e2 := newEnv(t, func(c *Config) { c.CheckoutCodesPerIP = 1 })
+	a2, _ := seed(t, e2)
+	enableShopCheckout(t, e2.adminClient("owner@example.com", "owner-pass-123"), "tick")
+	p2 := e2.client()
+	if res, _ := p2.do("POST", "/api/v1/s/shop/checkouts", map[string]any{"items": []map[string]any{}}, nil); res.StatusCode != 400 {
+		t.Fatalf("empty cart: %d", res.StatusCode)
+	}
+	if res, body := p2.do("POST", "/api/v1/s/shop/checkouts", map[string]any{"items": []map[string]any{{"code": a2, "qty": 1}}}, nil); res.StatusCode != 201 {
+		t.Fatalf("first real code after a rejected cart: %d %s", res.StatusCode, body)
+	}
+	_ = b
+}
+
+func TestCatalogueDownloadsFromOneSharedIP(t *testing.T) {
+	e := newEnv(t)
+	seed(t, e)
+	c := e.client()
+	for i := 0; i < 15; i++ { // e.g. fifteen shoppers on the shop's Wi-Fi saving prices for offline use
+		if res, _ := c.do("GET", "/api/v1/s/shop/catalog", nil, map[string]string{"Accept-Encoding": "gzip"}); res.StatusCode != 200 {
+			t.Fatalf("download %d from one IP: %d", i+1, res.StatusCode)
+		}
 	}
 }
 
@@ -367,5 +424,30 @@ func TestAuditModeRecheckMismatchAndOwnerReportAPI(t *testing.T) {
 	}
 	if !bytes.Contains(csvBody, []byte(cc.Code)) || !bytes.Contains(csvBody, []byte("'=1+1 unscanned rice")) {
 		t.Fatalf("csv missing expected guarded content:\n%s", csvBody)
+	}
+}
+
+func TestOutOfAllowanceClientCanStillReshowItsCode(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.CheckoutCodesPerIP = 1 })
+	a, _ := seed(t, e)
+	enableShopCheckout(t, e.adminClient("owner@example.com", "owner-pass-123"), "tick")
+	pub := e.client()
+	items := map[string]any{"items": []map[string]any{{"code": a, "qty": 2}}}
+	res, body := pub.do("POST", "/api/v1/s/shop/checkouts", items, nil)
+	if res.StatusCode != 201 {
+		t.Fatalf("first: %d %s", res.StatusCode, body)
+	}
+	var cc store.CheckoutCreated
+	decode(t, body, &cc)
+	items["prev_code"] = cc.Code
+	res, body = pub.do("POST", "/api/v1/s/shop/checkouts", items, nil)
+	var again store.CheckoutCreated
+	decode(t, body, &again)
+	if res.StatusCode != 200 || !again.Reused || again.Code != cc.Code {
+		t.Fatalf("re-show existing code while out of allowance: %d %s", res.StatusCode, body)
+	}
+	items["items"] = []map[string]any{{"code": a, "qty": 3}} // changed cart needs a NEW code
+	if res, _ := pub.do("POST", "/api/v1/s/shop/checkouts", items, nil); res.StatusCode != 429 {
+		t.Fatalf("new code while out of allowance: want 429, got %d", res.StatusCode)
 	}
 }

@@ -14,13 +14,13 @@ import (
 var sixDigits = regexp.MustCompile(`\b(\d{6})\b`)
 
 // lastDev waits for the delivery worker and returns the newest recorded
-// (development-mode) message to `to`.
-func lastDev(t *testing.T, e *env, to string) platform.DevMessage {
+// (development-mode) message to `to`, of the given kind if one is named.
+func lastDev(t *testing.T, e *env, to string, kind ...string) platform.DevMessage {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, m := range e.srv.Platform().DevMessages() {
-			if m.To == to {
+			if m.To == to && (len(kind) == 0 || m.Kind == kind[0]) {
 				return m
 			}
 		}
@@ -47,7 +47,7 @@ func signIn(t *testing.T, e *env, c *client, slug, contact, via string) map[stri
 		Contact platform.Contact `json:"contact"`
 	}
 	decode(t, body, &st)
-	code := sixDigits.FindStringSubmatch(lastDev(t, e, st.Contact.Value).Text)[1]
+	code := sixDigits.FindStringSubmatch(lastDev(t, e, st.Contact.Value, "otp").Text)[1]
 	res, body = c.post("/api/v1/s/"+slug+"/account/verify", map[string]string{"contact": contact, "code": code})
 	if res.StatusCode != 200 {
 		t.Fatalf("verify: %d %s", res.StatusCode, body)
@@ -93,7 +93,7 @@ func TestShopSignupApprovalAndOwnerSetupLink(t *testing.T) {
 	if res.StatusCode != 201 || !strings.Contains(ap.SetupURL, "/s/fresh-mart/admin/#setup=pw_") {
 		t.Fatalf("%d %s", res.StatusCode, body)
 	}
-	welcome := lastDev(t, e, "ann@fresh.example")
+	welcome := lastDev(t, e, "ann@fresh.example", "welcome")
 	if !strings.Contains(welcome.Text, ap.SetupURL) {
 		t.Fatalf("welcome e-mail lacks the setup link: %s", welcome.Text)
 	}
@@ -183,7 +183,7 @@ func TestShopperAccountJoinPrivacyAndMessages(t *testing.T) {
 	if res.StatusCode != 200 {
 		t.Fatalf("%d %s", res.StatusCode, body)
 	}
-	msg := lastDev(t, e, "jane@mail.example")
+	msg := lastDev(t, e, "jane@mail.example", "broadcast")
 	if !strings.Contains(msg.Text, "Sugar 4,900") || !strings.Contains(msg.Text, "/u/") {
 		t.Fatalf("%+v", msg)
 	}
@@ -221,7 +221,7 @@ func TestPhoneSignInUsesShopAllowanceAndWrongCodes(t *testing.T) {
 	if sh["phone"] != "+256772123456" {
 		t.Fatalf("%v", out)
 	}
-	if m := lastDev(t, e, "+256772123456"); m.Channel != "whatsapp" {
+	if m := lastDev(t, e, "+256772123456", "otp"); m.Channel != "whatsapp" {
 		t.Fatalf("code went by %s", m.Channel)
 	}
 	u, _ := e.srv.Platform().Usage(context.Background(), "shop")
@@ -243,7 +243,7 @@ func TestForgotPasswordDoesNotRevealAccounts(t *testing.T) {
 	if r1.StatusCode != 200 || r2.StatusCode != 200 || string(b1) != string(b2) {
 		t.Fatal("answers must be identical")
 	}
-	m := lastDev(t, e, "owner@example.com")
+	m := lastDev(t, e, "owner@example.com", "password")
 	i := strings.Index(m.Text, "#setup=")
 	if i < 0 {
 		t.Fatalf("%s", m.Text)

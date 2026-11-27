@@ -77,8 +77,12 @@ Codes are normalised (`internal/barcode`): EAN-8/UPC-A/EAN-13/GTIN-14 → 14-dig
 * Every price/offer change and checkout verification is recorded in `history` with the actor.
 * Database exports/backups drop live session rows.
 
+## Shopper accounts and messaging (shared across shops)
+
+Everything that spans shops lives in one more SQLite file, `_platform.db` (`internal/platform`): shop registrations, shopper accounts, sessions, sign-in codes, **memberships (consent per shop)**, per-shop monthly SMS/WhatsApp allowances and usage, broadcasts and an outbox. A background worker delivers the outbox with retries through pluggable senders (SMTP, Africa's Talking, WhatsApp Cloud API). A channel without a configured provider runs in development mode: messages are recorded for the operator console instead of delivered. A shop reads its members only through memberships, so a shop can never list shoppers who did not join it.
+
 ## What is deliberately *not* in the design
 
-* No accounts or personal data for shoppers.
+* No personal data about shoppers unless they sign in, and none shared with a shop unless they join it.
 * No dependency on the shop's POS beyond a price file (see POS-INTEGRATION.md).
 * No central database, queue, cache or message broker.

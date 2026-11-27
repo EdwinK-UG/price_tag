@@ -188,12 +188,25 @@
 
   // ---- home page: offers ----------------------------------------------------------------------------
   var boundaryTimer;
+  // The shop chooses which sections appear BELOW the scan button and search box
+  // (those two always come first: finding a price is the point of the app).
   function renderHome() {
     var st = store();
     $('storeName').textContent = st.name; document.title = st.name + ' - prices';
-    var a = $('announce'); a.textContent = st.announcement || ''; a.hidden = !st.announcement;
-    var box = $('offers'), now = nowSec(), promos = (S.home && S.home.promos) || [], next = Infinity;
+    var box = $('offers');
     box.textContent = '';
+    var blocks = st.blocks && st.blocks.length ? st.blocks : [{ type: 'announcement' }, { type: 'offers' }];
+    blocks.forEach(function (b) {
+      if (b.type === 'offers') renderOffers(box);
+      else if (b.type === 'announcement') { if (st.announcement) box.appendChild(h('p', { id: 'announce', class: 'announce', text: st.announcement })); }
+      else if (b.type === 'text') box.appendChild(h('section', { class: 'blk' }, [b.title ? h('h3', { text: b.title }) : null, b.text ? h('p', { text: b.text }) : null]));
+      else if (b.type === 'signup' && ls.get('member') !== '1') box.appendChild(h('section', { class: 'blk signup' }, [
+        h('h3', { text: b.title || 'Join ' + st.name }), h('p', { text: b.text || 'Get offers by SMS, WhatsApp or e-mail. One Price Tag account works in every shop.' }),
+        h('button', { class: 'btn', type: 'button', text: signedIn() ? 'Join' : 'Sign up', onclick: function () { openAccount(); } })]));
+    });
+  }
+  function renderOffers(box) {
+    var now = nowSec(), promos = (S.home && S.home.promos) || [], next = Infinity;
     var live = promos.filter(function (p) {
       if (p.from > now) next = Math.min(next, p.from);
       else if (p.to > now) { next = Math.min(next, p.to); return true; }
@@ -228,6 +241,20 @@
       S.etag = res.headers.get('etag');
       return res.json().then(function (j) { S.home = j; ls.set('home', JSON.stringify(j)); if (S.etag) ls.set('etag', S.etag); renderHome(); renderRecent(); if (S.open) refreshSheet(); if (cartCtl) cartCtl.onStatus(); });
     }).catch(function () { /* offline: keep the saved page */ });
+  }
+
+  // ---- account (lazy-loaded) -----------------------------------------------------------------
+  var accLoading = null;
+  function signedIn() { try { return localStorage.getItem('pt:signed') === '1'; } catch (e) { return false; } }
+  function paintAcc() { var b = $('accBtn'), on = signedIn(); b.classList.toggle('on', on); b.setAttribute('aria-label', on ? 'Your account' : 'Sign in'); }
+  function openAccount() {
+    if (!accLoading) {
+      if (!document.querySelector('link[href="/static/shopper/account.css"]')) document.head.appendChild(h('link', { rel: 'stylesheet', href: '/static/shopper/account.css' }));
+      accLoading = loadScript('/static/shopper/account.js').then(function () {
+        return window.PTAccount.mount({ api: API, h: h, ls: ls, sheet: sheet, openSheet: openSheet, closeSheet: closeSheet, toast: toast, store: store, state: S, onChange: function () { paintAcc(); renderHome(); } });
+      }, function (e) { accLoading = null; throw e; });
+    }
+    accLoading.then(function (a) { S.open = null; S.cartOpen = false; sheetItem = null; a.open(); }, function () { toast('Could not open your account. Check your connection.'); });
   }
 
   // ---- recents -------------------------------------------------------------------------------------------
@@ -451,32 +478,6 @@
     refreshSheetMeta();
   }
 
-  // In offline-catalogue mode a completed sync leaves the phone's copy equal to the
-  // shop's list at version S.v. Push that into what the shopper can see: the cart
-  // (repriced, with "price changed" markers), the open item and the recents.
-  function afterCatalogSync() {
-    var v = S.v || 0;
-    renderRecent();
-    if (S.open) {
-      var oc = S.open;
-      cache.get(oc).then(function (it) {
-        if (S.open !== oc) return;
-        if (it) { it.chk = Math.max(it.chk || 0, v); sheetItem = it; renderItem(it); }
-        else message('No longer listed', 'This product was just removed from the shop\'s price list. Ask staff for the price.');
-      });
-    }
-    var codes = cartCodes();
-    if (!codes.length) return;
-    Promise.all(codes.map(function (c) { return cache.get(c); })).then(function (arr) {
-      var items = [], gone = [];
-      arr.forEach(function (it, i) {
-        if (it) items.push(Object.assign({}, it, { chk: Math.max(it.chk || 0, v) }));
-        else gone.push(codes[i]);
-      });
-      withCart(function (c) { c.onEvents(items, gone, v); });
-    });
-  }
-
   // After a bulk change (e.g. the nightly price file) we do not know which cached
   // prices moved, so re-check only what is on screen: the open item, recents and
   // cart items. Each is a conditional request (~100 bytes when nothing changed).
@@ -503,53 +504,20 @@
     });
   }
 
-  // ---- offline catalogue (opt-in) -------------------------------------------------------------------------------------
-  function syncCatalog(fresh, onProgress, sinceV) {
-    var from = sinceV != null ? sinceV : S.v;
-    var since = fresh || from == null ? '' : '?since=' + from, n = 0, hdr = null, batch = [], buf = '', dec = window.TextDecoder ? new TextDecoder() : null;
-    function flush() { var b = batch; batch = []; return cache.put(b); }
-    function line(l) {
-      if (!l) return Promise.resolve();
-      var o = JSON.parse(l);
-      if (o.code) { o.chk = hdr.v; o.at = Date.now(); batch.push(o); n++; if (onProgress && n % 200 === 0) onProgress(n, hdr.total || 0); return batch.length >= 500 ? flush() : Promise.resolve(); }
-      if (o.gone) return cache.del(o.gone);
-      if (o.end) { hdr.done = true; return Promise.resolve(); }
-      if (o.v != null) { hdr = o; return o.full ? cache.clear() : Promise.resolve(); }
-      return Promise.resolve();
-    }
-    return getRaw('catalog' + since, {}, 300000).then(function (res) {
-      if (!res.ok) throw new Error('catalog ' + res.status);
-      var chain = Promise.resolve();
-      var done = function () { return chain.then(flush).then(function () { if (!hdr || !hdr.done) throw new Error('download was cut short'); S.full = true; S.v = hdr.v; S.fresh = hdr.v; saveMeta(); }); };
-      if (!res.body || !res.body.getReader || !dec) return res.text().then(function (t) { t.split('\n').forEach(function (l) { chain = chain.then(function () { return line(l); }); }); return done(); });
-      var rd = res.body.getReader();
-      function pump() {
-        return rd.read().then(function (r) {
-          if (r.done) { chain = chain.then(function () { return line(buf); }); return done(); }
-          buf += dec.decode(r.value, { stream: true });
-          var parts = buf.split('\n'); buf = parts.pop();
-          parts.forEach(function (l) { chain = chain.then(function () { return line(l); }); });
-          return chain.then(pump);
-        });
-      }
-      return pump();
-    });
+  // ---- offline price list + menu (lazy-loaded: offline.js) ---------------------------------------
+  var offLoading = null;
+  function loadOffline() {
+    if (!offLoading) offLoading = loadScript('/static/shopper/offline.js').then(function () {
+      return window.PTOffline.mount({ S: S, h: h, ls: ls, cache: cache, getRaw: getRaw, saveMeta: saveMeta, store: store, toast: toast, sheet: sheet, openSheet: openSheet, closeSheet: closeSheet,
+        message: message, renderItem: renderItem, renderRecent: renderRecent, renderHome: renderHome, loadHome: loadHome, connect: connect, disconnect: disconnect,
+        cartCodes: cartCodes, withCart: withCart, loadCart: loadCart, clearSheetItem: function () { sheetItem = null; },
+        clearCart: function () { if (cartCtl) cartCtl.clear(); else paintCartBadge(0); } });
+    }, function (e) { offLoading = null; throw e; });
+    return offLoading;
   }
-
-  function openMenu() {
-    openSheet(); S.cartOpen = false; sheetItem = null; S.open = null;
-    var prog = h('progress', { max: '100', value: '0', hidden: true }), status = h('p', { class: 'sub', text: S.full ? 'Prices are saved on this phone for use without a connection.' : 'Save the whole price list on this phone to scan with no signal. Best done on Wi-Fi (about 1 MB per 20,000 products).' });
-    var dl = h('button', { class: 'btn', type: 'button', text: S.full ? 'Update saved prices' : 'Save prices for offline use', onclick: function () {
-      dl.disabled = true; prog.hidden = false; status.textContent = 'Downloading…';
-      syncCatalog(!S.full, function (n, t) { prog.max = t || n; prog.value = n; status.textContent = 'Saving ' + n.toLocaleString() + (t ? ' of ' + t.toLocaleString() : '') + ' products…'; })
-        .then(function () { loadCart().catch(function () { }); status.textContent = 'Done. Prices now work without a connection.'; prog.hidden = true; dl.disabled = false; dl.textContent = 'Update saved prices'; renderRecent(); })
-        .catch(function () { status.textContent = 'The download did not finish. Try again on a better connection.'; prog.hidden = true; dl.disabled = false; });
-    } });
-    var rm = h('button', { class: 'btn ghost', type: 'button', text: 'Forget everything saved on this phone', onclick: function () {
-      cache.clear().then(function () { ['recent', 'v', 'fresh', 'full', 'home', 'etag', 'cart'].forEach(ls.del); if (cartCtl) cartCtl.clear(); else paintCartBadge(0); S.full = false; S.v = null; S.fresh = 0; S.home = null; S.etag = null; renderHome(); renderRecent(); disconnect(); connect(); loadHome(); toast('Saved prices removed'); closeSheet(); });
-    } });
-    sheet(h('div', { class: 'menu' }, [h('h2', { id: 'sheetTitle', text: store().name }), status, prog, dl, rm]));
-  }
+  function syncCatalog(fresh, onProgress, sinceV) { return loadOffline().then(function (m) { return m.syncCatalog(fresh, onProgress, sinceV); }); }
+  function afterCatalogSync() { return loadOffline().then(function (m) { m.afterCatalogSync(); }); }
+  function openMenu() { loadOffline().then(function (m) { m.openMenu(); }, function () { toast('Could not open the menu. Check your connection.'); }); }
 
   // ---- scanner ----------------------------------------------------------------------------------------------------------
   var scanCtl = null, audio = null;
@@ -592,6 +560,7 @@
   $('zoomBtn').addEventListener('click', function () { if (scanCtl) scanCtl.zoom(); });
   $('cartBtn').addEventListener('click', function () { withCart(function (c) { c.open(); }); });
   $('menuBtn').addEventListener('click', openMenu);
+  $('accBtn').addEventListener('click', openAccount);
   $('clearRecent').addEventListener('click', function () { ls.del('recent'); renderRecent(); });
   $('sheet').addEventListener('click', function (e) { if (e.target === $('sheet')) closeSheet(); });
   $('find').addEventListener('submit', function (e) {
@@ -616,7 +585,7 @@
     else if (e.key === pfx + 'cart') { paintCartBadge(); if (cartCtl) cartCtl.onStorage(); else if (cartCount() > 0) loadCart().catch(function () { }); }
   });
 
-  renderHome(); renderRecent(); paintStatus(); paintCartBadge();
+  renderHome(); renderRecent(); paintStatus(); paintAcc(); paintCartBadge();
   if (cartCount() > 0) setTimeout(function () { loadCart().catch(function () { }); }, 0);
   connect(); loadHome();
   if ('serviceWorker' in navigator) window.addEventListener('load', function () {

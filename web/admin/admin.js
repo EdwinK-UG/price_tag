@@ -97,13 +97,33 @@
       e.preventDefault(); btn.disabled = true; err.hidden = true;
       api('POST', 'login', { email: email.value, password: pass.value }).then(function () { start(); }, function (x) { err.textContent = x.status === 429 ? 'Too many attempts. Wait a minute and try again.' : x.message; err.hidden = false; btn.disabled = false; pass.value = ''; pass.focus(); });
     } }, [err, field('E-mail', email), field('Password', pass), h('div', { class: 'bar' }, h('span', null)), btn]);
-    app.appendChild(h('div', { class: 'login' }, [h('h2', { text: 'Shop admin' }), h('p', { class: 'sub', text: 'Sign in to manage prices and offers.' }), form,
-      h('p', { class: 'sub', text: 'Forgot your password? Ask your shop owner, or the person who set up Price Tag for you, to reset it.' })]));
+    var forgot = h('button', { class: 'link', type: 'button', text: 'Forgot your password?', onclick: function () {
+      if (!email.value) { err.textContent = 'Type your e-mail address above first.'; err.hidden = false; email.focus(); return; }
+      api('POST', 'forgot', { email: email.value }).then(function () { err.hidden = true; toast('If that address has an account here, we sent it a link to choose a new password.'); }, function (x) { err.textContent = x.message; err.hidden = false; });
+    } });
+    app.appendChild(h('div', { class: 'login' }, [h('h2', { text: 'Shop admin' }), h('p', { class: 'sub', text: 'Sign in to manage prices and offers.' }), form, forgot]));
     email.focus();
   }
 
+  // One-time link from the welcome or "forgot password" e-mail: /admin/#setup=TOKEN
+  // (in the #fragment, so the token never reaches server logs or other sites).
+  function showSetup(tok) {
+    app.textContent = '';
+    var err = h('p', { class: 'msg bad', hidden: true, role: 'alert' });
+    var p1 = h('input', { type: 'password', autocomplete: 'new-password', id: 'np1', placeholder: 'At least 8 characters' }), p2 = h('input', { type: 'password', autocomplete: 'new-password', id: 'np2' });
+    var btn = h('button', { class: 'btn primary', type: 'submit', text: 'Save and sign in' });
+    app.appendChild(h('div', { class: 'login' }, [h('h2', { text: 'Choose your password' }), h('form', { class: 'card', onsubmit: function (e) {
+      e.preventDefault(); err.hidden = true;
+      if (p1.value !== p2.value) { err.textContent = 'The two passwords are different.'; err.hidden = false; return; }
+      btn.disabled = true;
+      api('POST', 'setup', { token: tok, password: p1.value }).then(function () { history.replaceState(null, '', location.pathname); location.hash = ''; start(); },
+        function (x) { err.textContent = x.message; err.hidden = false; btn.disabled = false; });
+    } }, [err, field('New password', p1), field('Type it again', p2), btn])]));
+    p1.focus();
+  }
+
   // ---- shell + routing ------------------------------------------------------------------------
-  var ROUTES = [['prices', 'Prices'], ['offers', 'Offers'], ['checkout', 'Checkout'], ['import', 'Import'], ['activity', 'Activity'], ['audit', 'Audit report', 'owner'], ['team', 'Team', 'owner'], ['keys', 'Integrations', 'owner'], ['settings', 'Settings']];
+  var ROUTES = [['prices', 'Prices'], ['offers', 'Offers'], ['checkout', 'Checkout'], ['import', 'Import'], ['activity', 'Activity'], ['audit', 'Audit report', 'owner'], ['customers', 'Customers', 'owner'], ['messages', 'Messages', 'owner'], ['page', 'Shop page', 'owner'], ['team', 'Team', 'owner'], ['keys', 'Integrations', 'owner'], ['settings', 'Settings']];
   var viewBox, navBox, viewerBox, nameBox;
   function start() {
     api('GET', 'me', null, { quiet: true }).then(function (me) {
@@ -129,11 +149,14 @@
     var hash = location.hash.slice(1) || 'prices', parts = hash.split('/'), name = parts[0];
     [].forEach.call(navBox.children, function (a) { if (a.getAttribute('data-r') === (name === 'offer' ? 'offers' : name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     viewBox.textContent = '';
-    var views = { prices: viewPrices, offers: viewOffers, offer: function (b) { viewOfferEditor(b, parts[1]); }, checkout: viewCheckout, import: viewImport, activity: viewActivity, audit: viewAudit, team: viewTeam, keys: viewKeys, settings: viewSettings };
+    var views = { prices: viewPrices, offers: viewOffers, offer: function (b) { viewOfferEditor(b, parts[1]); }, checkout: viewCheckout, import: viewImport, activity: viewActivity, audit: viewAudit, customers: viewCustomers, messages: viewMessages, page: viewPage, team: viewTeam, keys: viewKeys, settings: viewSettings };
     (views[name] || viewPrices)(viewBox);
     window.scrollTo(0, 0);
   }
-  window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', function () {
+    var m = /#setup=(pw_[A-Za-z0-9_-]+)/.exec(location.hash); // a set-up link opened in an already-open admin tab
+    if (m) showSetup(m[1]); else route();
+  });
 
   // ---- prices ------------------------------------------------------------------------------------
   function viewPrices(box) {
@@ -823,7 +846,7 @@
         api('PUT', 'settings', {
           name: name.value, currency: set.currency, decimals: set.decimals, tz_offset: Number(tzs.value), announcement: ann.value,
           checkout_enabled: coEn.checked, checkout_ttl_min: Number(coTtl.value) || 180, checkout_default_mode: coMode.value,
-          audit_enabled: audEn.checked, audit_rate: Number(audRate.value) || 0
+          audit_enabled: audEn.checked, audit_rate: Number(audRate.value) || 0, home_blocks: S.settings.home_blocks || []
         }).then(function (s) { S.settings = s; nameBox.textContent = s.name; toast('Saved.'); }, function (e) { err.textContent = e.message; err.hidden = false; });
       } })) : h('p', { class: 'sub', text: 'Only an owner can change these.' })]));
     // shop link & QR poster
@@ -850,5 +873,110 @@
     } }))]));
   }
 
-  start(); // shows the login form when there is no session
+  // ---- customers (shoppers who joined this shop) -----------------------------------------------------
+  var CHN = { sms: 'SMS', whatsapp: 'WhatsApp', email: 'E-mail' };
+  function viewCustomers(box) {
+    box.appendChild(h('h2', { text: 'Customers' }));
+    box.appendChild(h('p', { class: 'sub', text: 'Shoppers who joined your shop in the Price Tag app. They chose to share their name and contact with you, and can leave at any time. Only those who ticked "send me offers" receive your messages.' }));
+    var stats = h('div', { class: 'stats' }), list = h('div', { class: 'list' });
+    box.appendChild(stats); box.appendChild(h('div', { class: 'bar' }, h('button', { class: 'btn small', type: 'button', text: 'Download list (CSV)', onclick: function () { api('GET', 'customers.csv', null, { blob: true }).then(function (b) { download(b, slug + '-customers.csv'); }, fail); } })));
+    box.appendChild(list);
+    api('GET', 'customers').then(function (r) {
+      var c = r.counts;
+      [[c.total, 'customers'], [c.offers, 'want offers'], [c.sms, 'by SMS'], [c.whatsapp, 'by WhatsApp'], [c.email, 'by e-mail']].forEach(function (x) { stats.appendChild(h('div', { class: 'stat' }, [h('b', { text: String(x[0]) }), h('span', { text: x[1] })])); });
+      if (!r.customers.length) list.appendChild(h('p', { class: 'sub', text: 'Nobody has joined yet. Add a "Join us" section to your shop page (Shop page tab) to invite shoppers.' }));
+      r.customers.forEach(function (m) {
+        list.appendChild(h('div', { class: 'item' }, [h('div', { class: 't' }, [h('b', { text: m.name || '(no name)' }), h('small', { text: m.contact + ' · ' + CHN[m.channel] + ' · joined ' + when(m.joined_at) })]),
+          h('span', { class: 'chip ' + (m.marketing ? 'live' : ''), text: m.marketing ? 'Offers on' : 'Offers off' })]));
+      });
+    }, fail);
+  }
+
+  // ---- messages to customers -----------------------------------------------------------------------------
+  function viewMessages(box) {
+    box.appendChild(h('h2', { text: 'Message your customers' }));
+    box.appendChild(h('p', { class: 'sub', text: 'Goes to every customer who asked for offers, each by their chosen way: SMS, WhatsApp or e-mail. An unsubscribe link is added automatically. Your shop pays for SMS and WhatsApp messages.' }));
+    var info = h('div'), out = h('div'), hist = h('div', { class: 'list' });
+    var ta = h('textarea', { maxlength: '459', placeholder: 'For example: Sugar 1 kg is UGX 4,900 this weekend only!' }), count = h('p', { class: 'sub' });
+    function seg(t) { var gsm = !/[^\x00-\x7f]|`/.test(t), n = t.length, one = gsm ? 160 : 70, part = gsm ? 153 : 67; return n <= one ? 1 : Math.ceil(n / part); }
+    ta.addEventListener('input', function () { count.textContent = ta.value.length + ' / 459 characters · about ' + seg(ta.value + '\n- ' + S.settings.name + '. Stop: https://x/u/0000.' + slug + '.abcdefghijkl') + ' SMS per customer (with the shop name and stop link)'; });
+    var prev = h('button', { class: 'btn', type: 'button', text: 'Check before sending' }), send = h('button', { class: 'btn primary', type: 'button', text: 'Send now', disabled: true });
+    function show(plan, err) {
+      out.textContent = '';
+      if (err) out.appendChild(h('p', { class: 'msg bad', role: 'alert', text: err }));
+      if (!plan) return;
+      var bc = plan.by_channel || {};
+      out.appendChild(h('div', { class: 'stats' }, [[plan.audience, 'want offers'], [bc.sms || 0, 'by SMS'], [bc.whatsapp || 0, 'by WhatsApp'], [bc.email || 0, 'by e-mail']].map(function (x) { return h('div', { class: 'stat' }, [h('b', { text: String(x[0]) }), h('span', { text: x[1] })]); })));
+      out.appendChild(h('p', { class: 'msg ' + (plan.fits ? 'ok' : 'warn'), text: 'Needs ' + plan.sms_units + ' SMS (' + plan.sms_remaining + ' left this month) and ' + plan.wa_units + ' WhatsApp (' + plan.wa_remaining + ' left).' + (plan.fits ? '' : ' This does not fit: ask Price Tag to raise your allowance, or shorten the message.') + (plan.skipped ? ' ' + plan.skipped + ' customer(s) cannot be reached on their chosen channel.' : '') }));
+    }
+    prev.addEventListener('click', function () {
+      send.disabled = true;
+      api('POST', 'messages', { text: ta.value, dry_run: true }).then(function (p) { show(p); send.disabled = !p.fits || !p.audience; }, function (e) { show(null, e.message); });
+    });
+    send.addEventListener('click', function () {
+      confirmBox('Send this message?', 'It goes out now to every customer who asked for offers. It cannot be recalled.', 'Send', false).then(function (ok) {
+        if (!ok) return;
+        send.disabled = true;
+        api('POST', 'messages', { text: ta.value }).then(function (p) { toast('Sent to ' + p.queued + ' customers.'); ta.value = ''; out.textContent = ''; route(); }, function (e) { show(null, e.message); });
+      });
+    });
+    ta.addEventListener('input', function () { send.disabled = true; });
+    box.appendChild(h('div', { class: 'card' }, [info, field('Message', ta), count, h('div', { class: 'bar' }, [prev, send]), out]));
+    box.appendChild(h('h3', { text: 'Sent' })); box.appendChild(hist);
+    api('GET', 'messages').then(function (r) {
+      var u = r.usage, dev = Object.keys(r.delivering).filter(function (k) { return /development/.test(r.delivering[k]); });
+      info.appendChild(h('p', { class: 'sub', text: 'This month: ' + u.sms_used + ' of ' + u.sms_cap + ' SMS, ' + u.wa_used + ' of ' + u.wa_cap + ' WhatsApp used. At most ' + r.per_day + ' messages per day.' }));
+      if (dev.length) info.appendChild(h('p', { class: 'msg warn', text: 'Test mode: ' + dev.join(', ') + ' messages are recorded but not actually delivered on this server.' }));
+      if (!r.messages.length) hist.appendChild(h('p', { class: 'sub', text: 'Nothing sent yet.' }));
+      r.messages.forEach(function (m) {
+        hist.appendChild(h('div', { class: 'item' }, [h('div', { class: 't' }, [h('b', { text: m.text }), h('small', { text: when(m.created_at) + ' · ' + m.created_by + ' · ' + m.delivered + ' of ' + m.queued + ' delivered' + (m.failed ? ', ' + m.failed + ' failed' : '') + (m.pending ? ', ' + m.pending + ' sending' : '') })])]));
+      });
+    }, fail);
+  }
+
+  // ---- shop page sections ------------------------------------------------------------------------------------
+  var BLOCKS = { offers: 'Live offers', announcement: 'Announcement (from Settings)', signup: '"Join us" invitation', text: 'Text (heading + paragraph)' };
+  function viewPage(box) {
+    box.appendChild(h('h2', { text: 'Shop page' }));
+    box.appendChild(h('p', { class: 'sub', text: 'Choose what shoppers see when they open your page. The scan button and search box always stay at the top so finding a price is never more than one tap away; your sections appear below them.' }));
+    var blocks = (S.settings.home_blocks && S.settings.home_blocks.length ? S.settings.home_blocks : [{ type: 'announcement' }, { type: 'offers' }]).map(function (b) { return { type: b.type, title: b.title || '', text: b.text || '' }; });
+    var list = h('div', { class: 'list' }), err = h('p', { class: 'msg bad', hidden: true, role: 'alert' });
+    function paint() {
+      list.textContent = '';
+      blocks.forEach(function (b, i) {
+        var kids = [h('div', { class: 't' }, [h('b', { text: (i + 1) + '. ' + BLOCKS[b.type] })])];
+        var row = h('div', { class: 'item' });
+        kids.push(h('div', { class: 'edit' }, [
+          h('button', { class: 'btn small', type: 'button', text: 'Up', disabled: i === 0, 'aria-label': 'Move up', onclick: function () { blocks.splice(i - 1, 0, blocks.splice(i, 1)[0]); paint(); } }),
+          h('button', { class: 'btn small', type: 'button', text: 'Down', disabled: i === blocks.length - 1, 'aria-label': 'Move down', onclick: function () { blocks.splice(i + 1, 0, blocks.splice(i, 1)[0]); paint(); } }),
+          h('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: function () { blocks.splice(i, 1); paint(); } })]));
+        if (b.type === 'text' || b.type === 'signup') {
+          var t1 = h('input', { type: 'text', maxlength: '60', value: b.title, placeholder: b.type === 'signup' ? 'Join ' + S.settings.name : 'Heading' }), t2 = h('textarea', { maxlength: '300', placeholder: b.type === 'signup' ? 'Get offers by SMS, WhatsApp or e-mail. One Price Tag account works in every shop.' : 'Text' });
+          t2.value = b.text;
+          t1.addEventListener('input', function () { b.title = t1.value; }); t2.addEventListener('input', function () { b.text = t2.value; });
+          kids.push(h('div', { class: 'acts' }, [h('div', { class: 'grow' }, [t1, t2])]));
+        }
+        Array.prototype.forEach.call(kids, function (k) { row.appendChild(k); });
+        list.appendChild(row);
+      });
+    }
+    var add = h('select', { 'aria-label': 'Add a section' }, [h('option', { value: '', text: 'Add a section…' })].concat(Object.keys(BLOCKS).map(function (k) { return h('option', { value: k, text: BLOCKS[k] }); })));
+    add.addEventListener('change', function () {
+      var t = add.value; add.value = '';
+      if (!t) return;
+      if (blocks.length >= 6) { toast('At most 6 sections.'); return; }
+      if (t !== 'text' && blocks.some(function (b) { return b.type === t; })) { toast('That section is already on the page.'); return; }
+      blocks.push({ type: t, title: '', text: '' }); paint();
+    });
+    var save = h('button', { class: 'btn primary', type: 'button', text: 'Save', onclick: function () {
+      err.hidden = true;
+      var body = Object.assign({}, S.settings, { home_blocks: blocks });
+      api('PUT', 'settings', body).then(function (s) { S.settings = s; toast('Saved. Shoppers see the new page straight away.'); }, function (e) { err.textContent = e.message; err.hidden = false; });
+    } });
+    box.appendChild(h('div', { class: 'card' }, [err, list, h('div', { class: 'bar' }, [add, save, h('a', { class: 'btn', href: '/s/' + encodeURIComponent(slug) + '/', target: '_blank', rel: 'noopener', text: 'Open my shop page' })])]));
+    paint();
+  }
+
+  var setupTok = /#setup=(pw_[A-Za-z0-9_-]+)/.exec(location.hash);
+  if (setupTok) showSetup(setupTok[1]); else start(); // start() shows the login form when there is no session
 })();

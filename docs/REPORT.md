@@ -194,3 +194,27 @@ A second review of the `scan-and-go` branch found the issues below; all are fixe
 | 7 | **Offline price-list downloads were throttled to ~12/hour per IP** (a whole shop's Wi-Fi), contrary to the docs: my earlier relaxation never applied. | Now 1 per 10 s per IP with a burst of 30; full downloads are already served from a per-version cache. | `TestCatalogueDownloadsFromOneSharedIP` (15 downloads from one IP) |
 
 **Budget note:** the shopper app's first load is now **16 321 bytes gzipped against a 16 384-byte budget (63 bytes of headroom)**. The next shopper-side feature will need either a trim or an explicit budget decision.
+
+## 13. Shop registration, shopper accounts and messaging
+
+**Decisions (from the product owner):** the operator approves every shop; shoppers sign in with a phone number or e-mail (their choice); one account works in every shop; shops pay for SMS; shoppers choose SMS, WhatsApp or e-mail for messages.
+
+**How it works**
+
+* **Shop registration:** `/signup` form → the operator approves it at `/operator/` → the shop is created and the owner gets a one-time link (7 days) to choose a password. "Forgot password" on the admin login e-mails a 2-hour link. Links carry the token after `#`, so it never reaches server logs or other sites.
+* **One account, consent per shop.** Accounts live in a separate `_platform.db` shared by all shops. Signing in is passwordless: a 6-digit code by e-mail, SMS or WhatsApp. Being signed in shares **nothing** with any shop. Tapping **Join <shop>** shows exactly what that shop will see (name + the chosen contact) and records consent for that shop only. "Send me offers" is a separate box, **off by default**. Leaving a shop or deleting the account removes access at once. Every message has a signed one-tap unsubscribe link.
+* **Messages:** owners message the members who opted in; each gets it on their chosen channel. A "check before sending" step shows who gets what and whether it fits the allowance. At most 3 messages per shop per day.
+* **The shop pays:** SMS and WhatsApp (sign-in codes sent from the shop's page, and its messages) count against the shop's **monthly allowance set by the operator** (default 0 = off) and are metered per month for invoicing. E-mail is free.
+* **Shop page:** owners arrange up to 6 sections (offers, announcement, "join us" invitation, text) **below** the scan button and search box, which always come first.
+* **Light:** the account screens are a 4.1 KB module loaded only when tapped. The shop menu and offline price list moved to a 2 KB module so the first download stayed under budget: **16,041 of 16,384 bytes**.
+
+**Verified:** Go tests for the account store (codes, limits, one account across shops, adding a second contact, consent isolation between shops, caps and metering, broadcasts, unsubscribe tokens, retries, development mode, applications) and for every new endpoint (CSRF, roles, cross-shop privacy, approval → set-up link → sign-in, identical "forgot password" answers). Browser tests for the whole journey: register → approve → set password; forgotten password; shopper signs up by e-mail, joins with offers, owner sees them and messages them, unsubscribe works; the same account in a second shop shares nothing until joined, then leaving removes access; phone sign-in with a WhatsApp code; the owner arranges page sections and the scan button stays on top; a shop without SMS allowance only offers e-mail codes.
+
+**Not verified (be careful):**
+
+1. **No real SMS, WhatsApp or e-mail has been sent.** The Africa's Talking, WhatsApp Cloud API and SMTP adapters were written from the providers' documentation and tested only against fake servers. Try each with a real account (Africa's Talking has a free sandbox) before launch.
+2. **WhatsApp needs Meta's approval:** a verified Meta business, a registered number and an **approved message template** with one parameter. Without the template, business-initiated messages are refused. This takes days to weeks.
+3. **Uganda data-protection obligations** (registration with the PDPO, a privacy notice, records of consent, handling deletion requests, and rules for direct marketing by SMS) apply now that the service stores names and contacts. The design supports them (explicit consent per shop, opt-in, unsubscribe, deletion), but **a privacy notice and terms are not written**, and a lawyer should review before launch.
+4. Shop members' contacts live in the shared accounts database, not in the shop's own file, so a shop's "download everything" does not include its customer list. There is a separate customer CSV for that, and every download is recorded in the shop's activity log.
+5. There is no invoicing or payment. Usage is metered and capped; billing the shop is manual.
+6. Spam protection on `/signup` is a rate limit plus a hidden field. There is no CAPTCHA, but the operator approves every shop, so spam only costs review time.

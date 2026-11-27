@@ -6,9 +6,10 @@ What exists today, and who uses it:
 
 | Who | Where | What they do |
 |---|---|---|
-| **You (the operator)** | the `pricetag` command | create a shop account for each supermarket you sign up (there is no public sign-up page yet) |
+| **A new supermarket** | `…/signup` | registers (shop name, address, owner, e-mail, phone) |
+| **You (the operator)** | `…/operator/` | approve registrations (the owner gets a set-up link), set each shop's monthly SMS / WhatsApp allowance, see messages |
 | **Shop owner / staff** | `…/s/<shop>/admin/` in any browser | sign in; **Import** their price file (CSV) with a preview; edit prices; create **Offers**; add **Team** members; print the **QR poster** (Settings); create an **Integration** key so their till system can send prices automatically; use the **Checkout** tab at the till |
-| **Shopper** | `…/s/<shop>/` (opened by scanning the QR poster) | scan or type a barcode → price; cart; checkout code |
+| **Shopper** | `…/s/<shop>/` (opened by scanning the QR poster) | scan or type a barcode → price; cart; checkout code; optionally sign in (one account for all shops), join a shop, choose offers by SMS / WhatsApp / e-mail |
 
 ## 0. One-time setup on the Mac
 
@@ -35,15 +36,20 @@ cloudflared tunnel --url http://localhost:8080
 
 It prints a line like `https://random-words.trycloudflare.com`. **That is your test address.** It works from any phone, on Wi-Fi or mobile data, while both terminals are running. Anyone who has the link can open it, and it changes every time you restart the tunnel.
 
-## 2. Sign up a supermarket (as the operator)
+## 2. A supermarket registers, you approve it
 
-Terminal 3:
+Start the server with an operator token so the console works (Terminal 1, instead of the command above):
 
 ```sh
-./bin/pricetag store create -slug fresh-mart -name "Fresh Mart" -owner-email owner@freshmart.example
+PRICETAG_OPERATOR_TOKEN=pick-a-long-secret-of-24-chars-or-more ./bin/pricetag serve -data ./data -trust-proxy
 ```
 
-It prints a one-time password. (Later this step becomes a public sign-up page; see the plan in the chat.)
+1. Open `https://<your-tunnel>/signup` and register "Fresh Mart" (any e-mail).
+2. Open `https://<your-tunnel>/operator/`, paste the token, **Registrations** → **Approve**. It shows a set-up link (also "e-mailed" to the owner).
+3. Open that link: choose the owner's password; you are now in Fresh Mart's admin.
+4. **Shops & message allowance** in the operator console: give Fresh Mart e.g. 100 SMS and 100 WhatsApp per month (0 = off; the shop pays).
+
+**About e-mail/SMS/WhatsApp while testing:** unless you configure a provider (see `docs/DEPLOY.md`), messages are not really sent. They appear in the operator console under **Messages**, including sign-in codes, so you can complete every flow. (Shortcut without the console: `./bin/pricetag store create -slug fresh-mart -name "Fresh Mart" -owner-email owner@freshmart.example` prints a password.)
 
 ## 3. The shop owner loads their prices
 
@@ -66,6 +72,14 @@ It prints a one-time password. (Later this step becomes a public sign-up page; s
 3. Keep a product open on the phone, change its price in the admin on the Mac: the phone updates by itself.
 4. Add a few items to the cart, tap **Checkout** → a 6-letter code. In the admin, **Checkout** tab → type the code → tick the items → **Mark verified / paid**.
 5. Turn on airplane mode: products you already looked at still show their price, labelled as saved.
+
+## 4b. Shopper accounts and the shop's messages
+
+1. On the phone, tap the person icon → enter your phone number or e-mail → **Send code**. Read the code in the operator console (**Messages**) → enter it.
+2. Add your name and choose how shops may message you. Tap **Join Fresh Mart**: it shows exactly what Fresh Mart will see. Tick "send me offers" if you want them.
+3. In the admin, **Shop page**: add a "Join us" invitation and a text section; reorder; Save. Reload the phone: they appear below the scan button.
+4. **Customers** shows who joined. **Messages** → write an offer → **Check before sending** (shows who gets it by SMS / WhatsApp / e-mail and whether it fits the allowance) → **Send now**. The message (with its unsubscribe link) appears in the operator console.
+5. Open the shop of another supermarket on the same phone: you are already signed in, but that shop sees nothing about you until you join it there.
 
 ## 5. Simulate the shop's till system sending prices
 

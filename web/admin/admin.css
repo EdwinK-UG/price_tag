@@ -83,3 +83,6 @@ input[type=date]{min-height:42px;padding:8px 12px;border:1px solid var(--line);b
 .chip.bad{background:var(--bad-bg);color:var(--bad)}
 .aud-lines{margin:6px 0 0;padding:0;list-style:none;font-size:13px;color:var(--mute)}
 .aud-lines li{margin:2px 0}
+.narrow{max-width:720px}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.devmsg{font-family:ui-monospace,Consolas,monospace;font-size:13px;white-space:pre-wrap;word-break:break-word}

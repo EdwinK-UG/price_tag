@@ -36,6 +36,23 @@ sudo install -m 0644 deploy/pricetag.service /etc/systemd/system/ && sudo system
 | `-max-sse-per-ip` / `-max-sse-per-store` | 1000 / 20000 | live connections |
 | `-dev-tls`, `-tls-cert/-tls-key` | off | for LAN tests / no reverse proxy |
 
+## Messages: e-mail, SMS, WhatsApp
+
+Without these settings every channel runs in **development mode**: messages (including sign-in codes) are recorded and shown in the operator console, not delivered. Configure each channel you want to really send:
+
+| Channel | Environment variables | Notes |
+|---|---|---|
+| E-mail | `PRICETAG_SMTP_ADDR=smtp.example.com:587` `PRICETAG_SMTP_USER` `PRICETAG_SMTP_PASS` `PRICETAG_SMTP_FROM="Price Tag <no-reply@example.com>"` | any SMTP provider; set SPF/DKIM for your domain or mail lands in spam |
+| SMS | `PRICETAG_AT_USERNAME` `PRICETAG_AT_APIKEY` `PRICETAG_AT_FROM` (sender ID, optional) `PRICETAG_AT_SANDBOX=1` (testing) | Africa's Talking. Sender IDs must be registered per country |
+| WhatsApp | `PRICETAG_WA_TOKEN` `PRICETAG_WA_PHONE_ID` `PRICETAG_WA_TEMPLATE` `PRICETAG_WA_LANG=en` | WhatsApp Cloud API (Meta). Business-initiated messages need an **approved template** with one body parameter; requires a verified Meta business |
+| Links | `PRICETAG_PUBLIC_URL=https://prices.example.com` | used in set-up / reset / unsubscribe links |
+| Country | `PRICETAG_COUNTRY_CODE=256` | for local phone numbers (Uganda by default) |
+| Alerts | `PRICETAG_OPERATOR_EMAIL` | e-mailed when a shop registers |
+
+**These three integrations were written from the providers' documentation and tested against fake servers only. Test each with a real account (Africa's Talking has a free sandbox) before relying on it.** Each shop's SMS and WhatsApp usage is metered per month in the operator console for invoicing; the allowance stops a shop from running up costs.
+
+Back up the shopper-account database too (`_platform.db`; `deploy/backup.sh` does it with `pricetag store backup-accounts`).
+
 ## Sizing (measured on 4 shared vCPUs, so conservative)
 
 * idle: ~40 MB. Each connected (live) phone: ~26 KB. **5 000 live phones = 171 MB**, and a price change reached all 5 000 in 26 ms.

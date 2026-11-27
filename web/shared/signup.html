@@ -1,1 +1,36 @@
-<!doctype html><title>Sign up</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Register your shop - Price Tag</title>
+<link rel="icon" href="/static/shared/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/admin/admin.css">
+</head>
+<body>
+<header class="top"><h1>Price Tag</h1><a href="/">Home</a></header>
+<main class="narrow">
+  <h2>Register your shop</h2>
+  <p class="sub">Your customers scan any product with their phone and see your current price, with your offers. No new hardware, and your till system stays as it is. We review every shop and e-mail you a link to finish setting up.</p>
+  <form id="f" class="card" novalidate>
+    <p id="err" class="msg bad" role="alert" hidden></p>
+    <label for="shop">Shop name</label><input id="shop" type="text" maxlength="80" required autocomplete="organization">
+    <label for="slug">Shop web address <small>(lowercase letters, numbers, hyphens)</small></label><input id="slug" type="text" maxlength="40" required autocapitalize="none" spellcheck="false">
+    <p id="url" class="sub"></p>
+    <div class="grid2">
+      <div><label for="name">Your name</label><input id="name" type="text" maxlength="80" required autocomplete="name"></div>
+      <div><label for="town">Town</label><input id="town" type="text" maxlength="80" autocomplete="address-level2"></div>
+    </div>
+    <div class="grid2">
+      <div><label for="email">E-mail</label><input id="email" type="email" required autocomplete="email"></div>
+      <div><label for="phone">Phone <small>(optional)</small></label><input id="phone" type="tel" autocomplete="tel"></div>
+    </div>
+    <label for="note">Anything we should know? <small>(optional: number of products, your till system)</small></label><textarea id="note" maxlength="500"></textarea>
+    <div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input id="website" type="text" tabindex="-1" autocomplete="off"></div>
+    <div class="bar"><button class="btn primary" type="submit" id="go">Send registration</button></div>
+  </form>
+  <div id="done" class="card" hidden><h3>Thank you!</h3><p>We received your registration. We will check it and e-mail you a link to set up your shop.</p></div>
+</main>
+<script src="/static/shared/signup.js"></script>
+</body>
+</html>

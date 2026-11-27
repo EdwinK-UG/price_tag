@@ -67,6 +67,36 @@ Offer body: `{title,text,starts_at,ends_at,enabled,items:[{code,price}]}` (times
 
 `POST /api/v1/operator/stores {slug,name,owner_email,owner_name?,owner_password?,currency?,decimals?,tz_offset?}` → `201` with the shop's URLs and (if generated) a one-time owner password. `GET /api/v1/operator/stores` → slugs. Both need `Authorization: Bearer <operator token>`. Wire this to your own sign-up form to onboard shops without shell access.
 
+## Shop registration (public)
+
+`POST /api/v1/signup {shop_name, slug, owner_name, owner_email, owner_phone?, town?, note?}` (needs `X-PT-CSRF: 1`; 1 per minute per IP, burst 5; a hidden `website` field must stay empty) → `201`. `409 slug_taken` if the address exists. The form is at `/signup`. The operator approves it (below).
+
+## Shopper accounts (one account for every shop; cookie `pt_shopper`, HttpOnly, SameSite=Strict, 90 days)
+
+All under `/api/v1/s/{slug}/account` (writes need `X-PT-CSRF: 1`). The shop in the path matters: it pays for SMS/WhatsApp codes sent from its page, and it is the shop being joined.
+
+| Method & path | |
+|---|---|
+| `GET …/account` | `{shopper|null, member|null, channels:{sms,whatsapp,email}, shop}`: who is signed in, whether they joined THIS shop, which code channels this shop can use now |
+| `POST …/start {contact, via}` | sends a 6-digit code. `contact` = phone (any local or international form; local numbers get +256) or e-mail; `via` = `sms` or `whatsapp` for phones. Same answer whether or not an account exists. Limits: 3 codes per contact per 15 min, per-IP rate. `409 channel_unavailable` when the shop has no allowance for that channel |
+| `POST …/verify {contact, code}` | signs in (creating the account on first use). If already signed in, adds the contact to the account instead (`409 contact_in_use` if another account has it). A code works once, for 10 minutes, with 5 tries |
+| `POST …/profile {name, channel}` | name (optional) and how shops may message you: `sms`, `whatsapp` or `email` (needs that contact) |
+| `POST …/join {marketing}` | **consent**: this shop may now see your name and chosen contact; `marketing` = also send me offers (default off) |
+| `POST …/marketing {on}` · `POST …/leave` | turn offers on/off · withdraw consent (the shop loses access immediately) |
+| `GET …/shops` | every shop that can see your details |
+| `POST …/logout` · `POST …/delete` | sign out · delete the account (every shop loses access) |
+| `GET /u/{token}` | one-tap unsubscribe link included in every message |
+
+## Shop owner: customers, messages, page sections, passwords
+
+Owner role only: `GET …/admin/customers` (members who joined, with what they agreed to share), `GET …/admin/customers.csv`, `GET …/admin/messages` (history, this month's usage and allowance), `POST …/admin/messages {text, dry_run?}` (to every member who opted in, each on their chosen channel, with an unsubscribe link; ≤ 459 characters, ≤ 3 per day; refused as a whole if SMS/WhatsApp would exceed the shop's monthly allowance). Page sections are `home_blocks` in `PUT …/admin/settings`: up to 6 of `offers`, `announcement`, `signup`, `text` (`{type,title,text}`); the scan button and search box are always above them.
+
+No session needed: `POST …/admin/forgot {email}` (always the same answer; e-mails a 2-hour link if the address exists), `POST …/admin/setup {token, password}` (one-time link from the welcome or reset e-mail: `/s/{slug}/admin/#setup=…`; signs in).
+
+## Operator console (`/operator/`, same operator token)
+
+`GET /api/v1/operator/applications`, `POST …/applications/{id}/approve {slug?}` (creates the shop, e-mails the owner a 7-day set-up link and returns it as `setup_url`), `POST …/applications/{id}/reject {note?}`, `GET …/shops` (with this month's usage), `PUT …/shops/{slug}/limits {sms_month_cap, wa_month_cap}` (the shop pays; 0 = channel off for that shop, the default), `GET …/outbox` (delivery status; real sign-in codes hidden), `GET …/status` (which channels really deliver; messages recorded in development mode).
+
 ## Health
 
 `GET /healthz` → `{"ok":true,"stores_open":N,"uptime_s":S}`.

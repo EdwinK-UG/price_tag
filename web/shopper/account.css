@@ -1,0 +1,16 @@
+.acc-title{margin:2px 40px 6px 0;font-size:21px;color:var(--ink);text-transform:none;letter-spacing:0}
+.acc .sub{margin:4px 0 10px}
+.acc-in{display:block;width:100%;min-height:52px;margin:10px 0;padding:0 14px;border:1px solid var(--line);border-radius:12px;background:var(--card);font-size:17px}
+.acc-code{letter-spacing:.3em;font-size:22px;text-align:center}
+.acc .btn{display:block;width:100%;margin:8px 0}
+.acc-via label,.acc-chk{display:flex;align-items:center;gap:10px;min-height:44px;font-size:15px}
+.acc-via label.off{color:var(--mute)}
+.acc-via input,.acc-chk input{width:22px;height:22px}
+.acc-lbl{margin:12px 0 2px;font-weight:600}
+.acc-share{margin:6px 0 12px;padding:12px;border-radius:10px;background:var(--warn-bg);color:var(--ink)}
+.acc-err{margin:8px 0;padding:10px 12px;border-radius:10px;background:var(--offer-bg);color:var(--offer)}
+.acc-dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:8px 0 14px}.acc-dl dt{color:var(--mute)}.acc-dl dd{margin:0;word-break:break-all}
+.acc-shop{margin:10px 0;padding:12px;border:1px solid var(--line);border-radius:12px}.acc-shop h3,.acc-h{margin:0 0 4px;font-size:16px}
+.acc-shops{margin:6px 0 12px;padding-left:18px}.acc-shops small{color:var(--mute)}
+.acc-del{margin-top:12px;padding:12px;border-radius:12px;background:var(--offer-bg)}
+.acc-del-link{margin-top:10px;color:var(--offer)}

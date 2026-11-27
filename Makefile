@@ -28,14 +28,18 @@ test-all: vet test-go test-js test-e2e
 
 # One command to try everything: seeds a demo shop and serves it.
 # Open http://localhost:8080/s/demo/  (and /s/demo/admin/, /s/demo/test-sheet)
+# The operator console (/operator/) needs a token; this one is for local testing ONLY.
+DEMO_OPERATOR_TOKEN ?= local-test-operator-token-change-me
+
 demo: build
 	$(BIN) demo -data ./data
-	$(BIN) serve -addr :8080 -data ./data
+	@echo "  operator console: http://localhost:8080/operator/  token: $(DEMO_OPERATOR_TOKEN)"
+	PRICETAG_OPERATOR_TOKEN=$(DEMO_OPERATOR_TOKEN) $(BIN) serve -addr :8080 -data ./data
 
 # Same, over HTTPS with a throw-away certificate, so a phone on your Wi-Fi may use its camera.
 demo-phone: build
 	$(BIN) demo -data ./data
-	$(BIN) serve -addr :8443 -data ./data -dev-tls
+	PRICETAG_OPERATOR_TOKEN=$(DEMO_OPERATOR_TOKEN) $(BIN) serve -addr :8443 -data ./data -dev-tls
 
 run: build
 	$(BIN) serve -addr :8080 -data ./data

@@ -923,3 +923,74 @@ func TestRelativeDataDirectoryAndBackupPath(t *testing.T) {
 	}
 	cp.Close()
 }
+
+func TestHomeBlocksValidationAndHomePayload(t *testing.T) {
+	s := newStore(t)
+	set := s.Settings()
+	set.HomeBlocks = []HomeBlock{{Type: "signup", Title: " Join  us ", Text: "Get weekly offers"}, {Type: "offers"}, {Type: "text", Title: "Opening hours", Text: "8am-10pm"}}
+	if err := s.UpdateSettings(ctx, "o", set); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Settings().HomeBlocks; len(got) != 3 || got[0].Title != "Join us" {
+		t.Fatalf("%+v", got)
+	}
+	h, _ := s.Home(ctx)
+	if !strings.Contains(string(h.JSON), `"blocks":[{"type":"signup"`) {
+		t.Fatalf("home payload: %s", h.JSON)
+	}
+	bad := [][]HomeBlock{
+		{{Type: "offers"}, {Type: "offers"}},
+		{{Type: "banner"}},
+		{{Type: "text"}},
+		{{Type: "text", Title: strings.Repeat("x", 61)}},
+		make([]HomeBlock, MaxHomeBlocks+1),
+	}
+	for i, b := range bad {
+		set.HomeBlocks = b
+		if err := s.UpdateSettings(ctx, "o", set); err == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+}
+
+func TestPasswordLinks(t *testing.T) {
+	s := newStore(t)
+	u, err := s.UserByEmail(ctx, "OWNER@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _ := s.Authenticate(ctx, "owner@example.com", "owner-pass-123")
+	sess, _, _ := s.CreateSession(ctx, old.ID)
+	tok, err := s.CreatePasswordToken(ctx, u.ID, "reset", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UsePasswordToken(ctx, tok, "short"); err == nil {
+		t.Fatal("weak password")
+	}
+	if _, err := s.UsePasswordToken(ctx, tok+"x", "brand-new-pass-1"); !errors.Is(err, ErrBadToken) {
+		t.Fatal("forged token")
+	}
+	if got, err := s.UsePasswordToken(ctx, tok, "brand-new-pass-1"); err != nil || got.ID != u.ID {
+		t.Fatalf("%v %v", got, err)
+	}
+	if _, err := s.UsePasswordToken(ctx, tok, "another-pass-12"); !errors.Is(err, ErrBadToken) {
+		t.Fatal("a link must work once")
+	}
+	if _, err := s.Authenticate(ctx, "owner@example.com", "brand-new-pass-1"); err != nil {
+		t.Fatal("new password")
+	}
+	if _, err := s.SessionUser(ctx, sess); err == nil {
+		t.Fatal("old sessions must end")
+	}
+	// a newer link cancels an older one; expired links fail
+	t1, _ := s.CreatePasswordToken(ctx, u.ID, "reset", time.Hour)
+	s.CreatePasswordToken(ctx, u.ID, "reset", time.Hour)
+	if _, err := s.UsePasswordToken(ctx, t1, "brand-new-pass-2"); !errors.Is(err, ErrBadToken) {
+		t.Fatal("older link still valid")
+	}
+	t3, _ := s.CreatePasswordToken(ctx, u.ID, "reset", -time.Second)
+	if _, err := s.UsePasswordToken(ctx, t3, "brand-new-pass-3"); !errors.Is(err, ErrBadToken) {
+		t.Fatal("expired link accepted")
+	}
+}

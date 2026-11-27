@@ -10,4 +10,5 @@ mkdir -p "$OUT"
 for slug in $(pricetag store list -data "$DATA"); do
   pricetag store backup -data "$DATA" -slug "$slug" -out "$OUT/$slug-$(date +%Y%m%d-%H%M%S).db"
 done
+pricetag store backup-accounts -data "$DATA" -out "$OUT/accounts-$(date +%Y%m%d-%H%M%S).db"   # shopper accounts (shared by all shops)
 find "$OUT" -name '*.db' -mtime +"$KEEP_DAYS" -delete

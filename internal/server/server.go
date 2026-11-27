@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"pricetag/internal/platform"
 	"pricetag/internal/store"
 	"pricetag/web"
 )
@@ -41,6 +42,11 @@ type Config struct {
 	// client from filling the shop-wide open-code cap and blocking checkout for
 	// everyone; it is sized for a whole shop sharing one Wi-Fi IP.
 	CheckoutCodesPerIP int
+	// Shopper accounts and messaging (shared across shops).
+	Senders            platform.Senders // nil senders = development mode (recorded, not delivered)
+	DefaultCountryCode string           // for local phone numbers; "256" (Uganda) if empty
+	PublicURL          string           // e.g. https://prices.example.com, used in message links; derived from requests if empty
+	OperatorEmail      string           // gets an e-mail when a shop applies to join
 }
 
 type Server struct {
@@ -52,6 +58,9 @@ type Server struct {
 
 	rlPublic, rlCatalog, rlLogin, rlAccount, rlAdmin, rlIngest, rlOperator *limiter
 	rlCheckoutCreate, rlCheckoutIP, rlCheckoutStore, rlCheckoutWindow      *limiter
+	rlSignup, rlCodeSend, rlCodeVerify                                     *limiter
+
+	plat *platform.Platform
 
 	sseMu sync.Mutex
 	sseIP map[string]int
@@ -83,6 +92,10 @@ func New(cfg Config) (*Server, error) {
 	if cfg.CheckoutCodesPerIP <= 0 {
 		cfg.CheckoutCodesPerIP = 2000
 	}
+	plat, err := platform.Open(cfg.DataDir, platform.Config{Senders: cfg.Senders, DefaultCountryCode: cfg.DefaultCountryCode, Logger: cfg.Logger})
+	if err != nil {
+		return nil, err
+	}
 	st, err := loadStatic(web.FS)
 	if err != nil {
 		return nil, err
@@ -102,11 +115,28 @@ func New(cfg Config) (*Server, error) {
 		rlCheckoutStore:  newLimiter(1, 40),     // per store failed lookups
 		// per IP+store, ~a checkout lifetime: at most CheckoutCodesPerIP new codes, refilling over 3 h
 		rlCheckoutWindow: newLimiter(float64(cfg.CheckoutCodesPerIP)/(3*3600), cfg.CheckoutCodesPerIP),
+		rlSignup:         newLimiter(1.0/60, 5), // shop applications per IP
+		rlCodeSend:       newLimiter(1.0/5, 30), // sign-in codes per IP (a shop's Wi-Fi is one IP)
+		rlCodeVerify:     newLimiter(1, 60),     // code checks per IP (each code also allows only 5 tries)
+		plat:             plat,
 		sseIP:            map[string]int{},
 		ctx:              ctx, cancel: cancel, start: time.Now(),
 	}
 	s.routes()
 	go s.reg.Janitor(ctx, time.Minute, 10*time.Minute)
+	go plat.RunWorker(ctx)
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				plat.Cleanup(ctx)
+			}
+		}
+	}()
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
@@ -115,7 +145,7 @@ func New(cfg Config) (*Server, error) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				for _, l := range []*limiter{s.rlPublic, s.rlCatalog, s.rlLogin, s.rlAccount, s.rlAdmin, s.rlIngest, s.rlOperator, s.rlCheckoutCreate, s.rlCheckoutIP, s.rlCheckoutStore} {
+				for _, l := range []*limiter{s.rlPublic, s.rlCatalog, s.rlLogin, s.rlAccount, s.rlAdmin, s.rlIngest, s.rlOperator, s.rlCheckoutCreate, s.rlCheckoutIP, s.rlCheckoutStore, s.rlSignup, s.rlCodeSend, s.rlCodeVerify} {
 					l.gc(15 * time.Minute)
 				}
 				// A long-window bucket must outlive its refill time (3 h), or forgetting
@@ -133,7 +163,11 @@ func (s *Server) Registry() *Registry { return s.reg }
 func (s *Server) Shutdown() {
 	s.cancel()
 	s.reg.CloseAll()
+	s.plat.Close()
 }
+
+// Platform exposes shopper accounts and messaging (used by the CLI and tests).
+func (s *Server) Platform() *platform.Platform { return s.plat }
 
 func (s *Server) Handler() http.Handler {
 	return s.recoverer(s.secure(s.mux))
@@ -328,6 +362,7 @@ func (s *Server) routes() {
 
 	s.adminRoutes()
 	s.operatorRoutes()
+	s.accountRoutes()
 
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {

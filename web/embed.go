@@ -4,5 +4,5 @@ package web
 
 import "embed"
 
-//go:embed all:shopper all:admin all:vendor all:shared
+//go:embed all:shopper all:admin all:vendor all:shared all:operator
 var FS embed.FS

@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestSchemaMigrationV2ToV3(t *testing.T) {
 	defer s.Close()
 
 	var sv string
-	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv); err != nil || sv != "3" {
+	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv); err != nil || sv != strconv.Itoa(schemaVersion) {
 		t.Fatalf("schema_version = %q, err=%v", sv, err)
 	}
 	co, err := s.GetCheckoutForCashier(ctx, "K7M9P2")

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestConcurrentOpensMigrateOnce(t *testing.T) {
 			if s := <-stores; s != nil {
 				var sv string
 				s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv)
-				if sv != "3" {
+				if sv != strconv.Itoa(schemaVersion) {
 					t.Fatalf("schema_version %q", sv)
 				}
 				s.Close()
@@ -105,7 +106,7 @@ func TestSchemaMigrationV1ToV2(t *testing.T) {
 	defer s.Close()
 
 	var sv string
-	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv); err != nil || sv != "3" {
+	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&sv); err != nil || sv != strconv.Itoa(schemaVersion) {
 		t.Fatalf("schema_version = %q, err=%v", sv, err)
 	}
 	set := s.Settings()

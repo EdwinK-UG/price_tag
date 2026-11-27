@@ -396,13 +396,14 @@ func (s *Store) StreamCatalog(ctx context.Context, since int64, emit func(any) e
 // ---- home page ------------------------------------------------------------
 
 type HomeStore struct {
-	Slug            string `json:"slug"`
-	Name            string `json:"name"`
-	Currency        string `json:"currency"`
-	Decimals        int    `json:"decimals"`
-	TZOffset        int    `json:"tz_offset"`
-	Announcement    string `json:"announcement,omitempty"`
-	CheckoutEnabled bool   `json:"checkout_enabled,omitempty"`
+	Slug            string      `json:"slug"`
+	Name            string      `json:"name"`
+	Currency        string      `json:"currency"`
+	Decimals        int         `json:"decimals"`
+	TZOffset        int         `json:"tz_offset"`
+	Announcement    string      `json:"announcement,omitempty"`
+	CheckoutEnabled bool        `json:"checkout_enabled,omitempty"`
+	Blocks          []HomeBlock `json:"blocks,omitempty"`
 }
 
 type HomePromoItem struct {
@@ -456,7 +457,7 @@ func (s *Store) Home(ctx context.Context) (*HomeSnapshot, error) {
 	v := s.v.Load()
 	set := s.Settings()
 	data := HomeData{V: v, Promos: []HomePromo{}, Store: HomeStore{Slug: s.Slug, Name: set.Name, Currency: set.Currency,
-		Decimals: set.Decimals, TZOffset: set.TZOffset, Announcement: set.Announcement, CheckoutEnabled: set.CheckoutEnabled}}
+		Decimals: set.Decimals, TZOffset: set.TZOffset, Announcement: set.Announcement, CheckoutEnabled: set.CheckoutEnabled, Blocks: set.HomeBlocks}}
 	rows, err := s.r.QueryContext(ctx, `SELECT id,title,text,starts_at,ends_at FROM promotions
 		WHERE enabled=1 AND ends_at>? AND starts_at<? ORDER BY (starts_at<=?) DESC, ends_at ASC, id LIMIT ?`,
 		now, now+homeLookahead, now, homeMaxPromos)

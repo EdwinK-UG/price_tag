@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ import (
 )
 
 const (
-	schemaVersion = 3
+	schemaVersion = 4
 	// MaxInline is the most changed items sent inline in one event; bigger
 	// commits (e.g. a nightly price file) send a "reset" hint instead.
 	MaxInline = 50
@@ -82,6 +83,50 @@ type Settings struct {
 	CheckoutDefaultMode string `json:"checkout_default_mode"` // "tick" | "rescan"
 	AuditEnabled        bool   `json:"audit_enabled"`
 	AuditRate           int    `json:"audit_rate"` // 0..100 percentage of checkouts flagged for full rescan
+	// HomeBlocks is what the shop shows on its page BELOW the always-present
+	// scan button and search box. Empty means the default: just the offers.
+	HomeBlocks []HomeBlock `json:"home_blocks,omitempty"`
+}
+
+// HomeBlock is one section of the shop's page. Types: "offers" (live offers),
+// "announcement" (the announcement text), "signup" (invite shoppers to join
+// for offers), "text" (a heading and a short paragraph).
+type HomeBlock struct {
+	Type  string `json:"type"`
+	Title string `json:"title,omitempty"`
+	Text  string `json:"text,omitempty"`
+}
+
+const MaxHomeBlocks = 6
+
+func (s *Settings) normalizeBlocks() error {
+	if len(s.HomeBlocks) > MaxHomeBlocks {
+		return invalid("home_blocks", "a shop page can have at most %d sections", MaxHomeBlocks)
+	}
+	seen := map[string]bool{}
+	for i := range s.HomeBlocks {
+		b := &s.HomeBlocks[i]
+		b.Type = strings.TrimSpace(b.Type)
+		b.Title = strings.Join(strings.Fields(b.Title), " ")
+		b.Text = strings.TrimSpace(b.Text)
+		switch b.Type {
+		case "offers", "announcement", "signup":
+			if seen[b.Type] {
+				return invalid("home_blocks", "the %s section can appear only once", b.Type)
+			}
+			seen[b.Type] = true
+		case "text":
+			if b.Title == "" && b.Text == "" {
+				return invalid("home_blocks", "a text section needs a heading or some text")
+			}
+		default:
+			return invalid("home_blocks", "unknown section type %q", b.Type)
+		}
+		if len([]rune(b.Title)) > 60 || len([]rune(b.Text)) > 300 {
+			return invalid("home_blocks", "section headings are limited to 60 characters and text to 300")
+		}
+	}
+	return nil
 }
 
 func DefaultSettings(name string) Settings {
@@ -127,7 +172,7 @@ func (s *Settings) normalize() error {
 	case s.AuditRate < 0 || s.AuditRate > 100:
 		return invalid("audit_rate", "audit rate must be between 0 and 100")
 	}
-	return nil
+	return s.normalizeBlocks()
 }
 
 type Store struct {
@@ -266,6 +311,16 @@ CREATE TABLE checkout_mismatch_items(
 CREATE INDEX checkout_mismatch_items_mid ON checkout_mismatch_items(mismatch_id);
 `
 
+const schemaV4SQL = `
+CREATE TABLE password_tokens(
+  token_hash BLOB PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  purpose TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+`
+
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(5000)")
@@ -370,7 +425,7 @@ func Create(dir, slug string, set Settings, ownerEmail, ownerName, ownerPassword
 		r.Close()
 		return fail(err)
 	}
-	_, err = tx.Exec(schemaSQL + schemaV2SQL + schemaV3SQL)
+	_, err = tx.Exec(schemaSQL + schemaV2SQL + schemaV3SQL + schemaV4SQL)
 	if err == nil {
 		_, err = tx.Exec(`INSERT INTO meta(key,value) VALUES('schema_version',?),('v','0'),('home_rev','0'),('purged_before','0'),('settings',?),('created_at',?)`,
 			strconv.Itoa(schemaVersion), string(setJSON), strconv.FormatInt(time.Now().Unix(), 10))
@@ -444,6 +499,8 @@ func (s *Store) migrate(from int) error {
 			_, stepErr = tx.Exec(schemaV2SQL)
 		case 2:
 			_, stepErr = tx.Exec(schemaV3SQL)
+		case 3:
+			_, stepErr = tx.Exec(schemaV4SQL)
 		default:
 			stepErr = fmt.Errorf("no migration from schema v%d", v)
 		}
@@ -647,7 +704,7 @@ func (s *Store) UpdateSettings(ctx context.Context, actor string, in Settings) e
 				return invalid("currency_locked", "currency and decimals cannot change once products exist")
 			}
 		}
-		if in == old {
+		if reflect.DeepEqual(in, old) {
 			return nil
 		}
 		js, _ := json.Marshal(in)

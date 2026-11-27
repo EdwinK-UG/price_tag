@@ -35,6 +35,7 @@ import (
 
 	"pricetag/internal/auth"
 	"pricetag/internal/demo"
+	"pricetag/internal/platform"
 	"pricetag/internal/server"
 	"pricetag/internal/store"
 )
@@ -129,7 +130,9 @@ func cmdServe(args []string) error {
 		return err
 	}
 	srv, err := server.New(server.Config{DataDir: *data, TrustProxy: *trust, OperatorToken: os.Getenv("PRICETAG_OPERATOR_TOKEN"), AccessLog: *access, Logger: log,
-		PublicRPS: *pubRPS, PublicBurst: *pubBurst, MaxSSEPerStore: *sseStore, MaxSSEPerIP: *sseIP})
+		PublicRPS: *pubRPS, PublicBurst: *pubBurst, MaxSSEPerStore: *sseStore, MaxSSEPerIP: *sseIP,
+		Senders: sendersFromEnv(), DefaultCountryCode: os.Getenv("PRICETAG_COUNTRY_CODE"),
+		PublicURL: os.Getenv("PRICETAG_PUBLIC_URL"), OperatorEmail: os.Getenv("PRICETAG_OPERATOR_EMAIL")})
 	if err != nil {
 		return err
 	}
@@ -222,6 +225,31 @@ func selfSigned() (tls.Certificate, error) {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
 }
 
+// sendersFromEnv configures real message delivery. Any channel without
+// settings runs in development mode: messages are recorded (visible in the
+// operator console at /operator/) but not delivered.
+//
+//	E-mail:   PRICETAG_SMTP_ADDR=smtp.example.com:587 PRICETAG_SMTP_USER PRICETAG_SMTP_PASS PRICETAG_SMTP_FROM="Price Tag <no-reply@example.com>"
+//	SMS:      PRICETAG_AT_USERNAME PRICETAG_AT_APIKEY [PRICETAG_AT_FROM] [PRICETAG_AT_SANDBOX=1]   (Africa's Talking)
+//	WhatsApp: PRICETAG_WA_TOKEN PRICETAG_WA_PHONE_ID PRICETAG_WA_TEMPLATE [PRICETAG_WA_LANG=en]   (WhatsApp Cloud API)
+func sendersFromEnv() platform.Senders {
+	var s platform.Senders
+	if a := os.Getenv("PRICETAG_SMTP_ADDR"); a != "" {
+		s.Email = &platform.SMTPSender{Addr: a, User: os.Getenv("PRICETAG_SMTP_USER"), Pass: os.Getenv("PRICETAG_SMTP_PASS"), From: env("PRICETAG_SMTP_FROM", "Price Tag <no-reply@localhost>")}
+	}
+	if u := os.Getenv("PRICETAG_AT_USERNAME"); u != "" {
+		at := &platform.AfricasTalkingSender{Username: u, APIKey: os.Getenv("PRICETAG_AT_APIKEY"), From: os.Getenv("PRICETAG_AT_FROM")}
+		if os.Getenv("PRICETAG_AT_SANDBOX") == "1" {
+			at.BaseURL = "https://api.sandbox.africastalking.com"
+		}
+		s.SMS = at
+	}
+	if t := os.Getenv("PRICETAG_WA_TOKEN"); t != "" {
+		s.WhatsApp = &platform.WhatsAppSender{Token: t, PhoneNumberID: os.Getenv("PRICETAG_WA_PHONE_ID"), Template: os.Getenv("PRICETAG_WA_TEMPLATE"), Lang: os.Getenv("PRICETAG_WA_LANG")}
+	}
+	return s
+}
+
 // ---- store admin ----------------------------------------------------------------------
 
 func cmdStore(args []string) error {
@@ -268,6 +296,20 @@ func cmdStore(args []string) error {
 			fmt.Println(s)
 		}
 		return err
+	case "backup-accounts":
+		p, err := platform.Open(*data, platform.Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err != nil {
+			return err
+		}
+		defer p.Close()
+		if *out == "" {
+			*out = filepath.Join(".", "accounts-"+time.Now().Format("20060102-150405")+".db")
+		}
+		if err := p.Backup(ctx, *out); err != nil {
+			return err
+		}
+		fmt.Println("shopper accounts backup written to", *out)
+		return nil
 	case "backup":
 		st, err := store.Open(*data, *slug)
 		if err != nil {
@@ -327,6 +369,17 @@ func cmdDemo(args []string) error {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(*data, *slug+".token"), []byte(tok+"\n"), 0o600); err != nil {
+			return err
+		}
+		// A test allowance so SMS / WhatsApp sign-in and messages can be tried
+		// (in development mode they are recorded at /operator/, not delivered).
+		p, err := platform.Open(*data, platform.Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err != nil {
+			return err
+		}
+		err = p.SetLimits(context.Background(), *slug, platform.Limits{SMSMonthCap: 200, WAMonthCap: 200})
+		p.Close()
+		if err != nil {
 			return err
 		}
 	}

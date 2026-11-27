@@ -39,6 +39,11 @@ func normEmail(e string) (string, error) {
 	return e, nil
 }
 
+// Audit records an action in the shop's activity history.
+func (s *Store) Audit(ctx context.Context, actor, kind, ref, summary string) {
+	s.audit(ctx, actor, kind, ref, summary)
+}
+
 func (s *Store) audit(ctx context.Context, actor, kind, ref, summary string) {
 	_, _ = s.w.ExecContext(ctx, `INSERT INTO history(at,actor,kind,ref,summary) VALUES(?,?,?,?,?)`, time.Now().Unix(), actor, kind, ref, summary)
 }
@@ -413,4 +418,79 @@ func (s *Store) ListHistory(ctx context.Context, kind, ref string, before int64,
 		out = append(out, h)
 	}
 	return out, rows.Err()
+}
+
+// ---- one-time password links (new owner set-up, forgotten password) ------------------
+
+const PasswordTokenTTL = 7 * 24 * time.Hour
+
+// UserByEmail finds an enabled user (for "forgot password").
+func (s *Store) UserByEmail(ctx context.Context, email string) (*User, error) {
+	u, err := scanUser(s.r.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE email=? AND disabled=0`, strings.ToLower(strings.TrimSpace(email))), nil)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return u, err
+}
+
+// CreatePasswordToken makes a one-time link token letting a user choose a
+// password (only the hash is stored). Earlier unused tokens are cancelled.
+func (s *Store) CreatePasswordToken(ctx context.Context, userID int64, purpose string, ttl time.Duration) (string, error) {
+	tok, hash, err := auth.NewToken("pw_")
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.w.ExecContext(ctx, `UPDATE password_tokens SET used=1 WHERE user_id=? AND used=0`, userID); err != nil {
+		return "", err
+	}
+	_, err = s.w.ExecContext(ctx, `INSERT INTO password_tokens(token_hash,user_id,purpose,expires_at) VALUES(?,?,?,?)`, hash, userID, purpose, time.Now().Add(ttl).Unix())
+	return tok, err
+}
+
+// UsePasswordToken sets a new password with a valid link token, signs the user
+// out everywhere else, and returns the user.
+func (s *Store) UsePasswordToken(ctx context.Context, token, password string) (*User, error) {
+	if !strings.HasPrefix(token, "pw_") || len(token) > 100 {
+		return nil, ErrBadToken
+	}
+	if err := auth.CheckPasswordPolicy(password); err != nil {
+		return nil, invalid("password", "%v", err)
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return nil, invalid("password", "%v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var uid, exp int64
+	var used int
+	err = tx.QueryRowContext(ctx, `SELECT user_id,expires_at,used FROM password_tokens WHERE token_hash=?`, auth.HashToken(token)).Scan(&uid, &exp, &used)
+	if err == sql.ErrNoRows || (err == nil && (used == 1 || exp <= time.Now().Unix())) {
+		return nil, ErrBadToken
+	} else if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE password_tokens SET used=1 WHERE token_hash=?`, auth.HashToken(token)); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET pass_hash=?, disabled=0 WHERE id=?`, hash, uid); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, uid); err != nil {
+		return nil, err
+	}
+	u, err := scanUser(tx.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id=?`, uid), nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.audit(ctx, u.Email, "user", u.Email, "Password set with a one-time link")
+	return u, nil
 }

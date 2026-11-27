@@ -279,8 +279,24 @@ func dsn(path string, readOnly bool) string {
 	} else {
 		q.Set("_txlock", "immediate")
 	}
-	u := url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}
+	u := url.URL{Scheme: "file", Path: uriPath(path), RawQuery: q.Encode()}
 	return u.String()
+}
+
+// uriPath makes a path safe for a SQLite "file:" URI. A relative path such as
+// "data/demo.db" would become "file://data/demo.db", where SQLite reads "data"
+// as a host name and refuses to open it (reported, misleadingly, as "out of
+// memory"). So: absolute, forward slashes, leading slash (also right for
+// Windows drive paths: "/C:/...").
+func uriPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }
 
 // DBPath is where a slug's file lives under the data directory.

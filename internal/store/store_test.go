@@ -892,3 +892,34 @@ func BenchmarkLookup(b *testing.B) {
 		}
 	})
 }
+
+// `make demo` uses a RELATIVE data directory ("./data"); every other test used
+// absolute temp dirs, so a broken relative-path URI went unnoticed.
+func TestRelativeDataDirectoryAndBackupPath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	s, err := Create("./data", "rel", DefaultSettings("Relative"), "o@example.com", "O", "password-1")
+	if err != nil {
+		t.Fatalf("create with relative dir: %v", err)
+	}
+	c := put(t, s, code("600123456789"), "Sugar", 5500)
+	if err := s.Backup(ctx, "rel-backup.db"); err != nil { // relative backup target, as `store backup` defaults to
+		t.Fatalf("backup to relative path: %v", err)
+	}
+	s.Close()
+	again, err := Open("data", "rel")
+	if err != nil {
+		t.Fatalf("reopen with relative dir: %v", err)
+	}
+	defer again.Close()
+	if it, err := again.Lookup(ctx, c); err != nil || it.Price != 5500 {
+		t.Fatalf("data lost: %+v %v", it, err)
+	}
+	if err := os.Rename("rel-backup.db", "data/relcopy.db"); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := Open("data", "relcopy")
+	if err != nil {
+		t.Fatalf("open relative backup: %v", err)
+	}
+	cp.Close()
+}

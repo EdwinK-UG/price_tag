@@ -75,7 +75,7 @@ func Seed(dir, slug string) (info *Info, err error) {
 	if store.Exists(dir, slug) {
 		return info, nil
 	}
-	set := store.DefaultSettings("Kampala Demo Supermarket")
+	set := store.DefaultSettings("Price Tag")
 	set.Announcement = "Open 8am to 10pm every day. Free parking."
 	st, err := store.Create(dir, slug, set, OwnerEmail, "Demo Owner", OwnerPassword)
 	if err != nil {

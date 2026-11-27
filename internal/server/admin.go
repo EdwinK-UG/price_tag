@@ -28,13 +28,27 @@ func (s *Server) sessionCookie(r *http.Request, slug string) string {
 
 // sameOrigin rejects cross-site browser requests. Cookies are SameSite=Strict
 // as well; this is the belt to that pair of braces.
-func sameOrigin(r *http.Request) bool {
+//
+// Behind a reverse proxy or tunnel that rewrites Host (when -trust-proxy is
+// on), the public host name arrives in X-Forwarded-Host and is accepted too.
+func (s *Server) sameOrigin(r *http.Request) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {
 		return true // non-browser clients (curl) send no Origin
 	}
 	u, err := url.Parse(o)
-	return err == nil && strings.EqualFold(u.Host, r.Host)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	if s.cfg.TrustProxy {
+		if fh := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0]); fh != "" {
+			return strings.EqualFold(u.Host, fh)
+		}
+	}
+	return false
 }
 
 // admin wraps a store-owner endpoint: rate limit, session check, CSRF guard on
@@ -59,7 +73,7 @@ func (s *Server) admin(role string, fn adminFn) http.HandlerFunc {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if !sameOrigin(r) || r.Header.Get("X-PT-CSRF") != "1" {
+			if !s.sameOrigin(r) || r.Header.Get("X-PT-CSRF") != "1" {
 				writeErr(w, 403, "csrf", "cross-site request blocked")
 				return
 			}
@@ -134,7 +148,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !s.limit(w, s.rlLogin, ipKey) {
 		return
 	}
-	if !sameOrigin(r) || r.Header.Get("X-PT-CSRF") != "1" {
+	if !s.sameOrigin(r) || r.Header.Get("X-PT-CSRF") != "1" {
 		writeErr(w, 403, "csrf", "cross-site request blocked")
 		return
 	}
@@ -175,7 +189,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	if !sameOrigin(r) || r.Header.Get("X-PT-CSRF") != "1" {
+	if !s.sameOrigin(r) || r.Header.Get("X-PT-CSRF") != "1" {
 		writeErr(w, 403, "csrf", "cross-site request blocked")
 		return
 	}

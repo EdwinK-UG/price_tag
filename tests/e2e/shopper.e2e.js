@@ -20,7 +20,7 @@ test('home page shows the shop, its announcement and live offers, with no consol
   const { ctx, page, problems } = await phone();
   await page.goto(srv.url + '/s/demo/');
   await page.waitForSelector('.promo');
-  assert.equal(await page.textContent('#storeName'), 'Kampala Demo Supermarket');
+  assert.equal(await page.textContent('#storeName'), 'Price Tag');
   assert.match(await page.textContent('#announce'), /Open 8am/);
   const titles = await page.$$eval('.promo h3', (n) => n.map((x) => x.textContent));
   assert.deepEqual(titles.sort(), ['Fresh & dairy special', 'Weekend pantry deals']);        // "Back to school" is scheduled, not live

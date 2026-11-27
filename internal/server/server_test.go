@@ -889,3 +889,23 @@ func TestPromoChangesInvalidateItemETag(t *testing.T) {
 		t.Fatalf("expected promo removed: %+v", it)
 	}
 }
+
+// A tunnel/proxy that rewrites Host must still let the owner sign in when
+// -trust-proxy is on, and must not open a hole when it is off.
+func TestSameOriginBehindHostRewritingProxy(t *testing.T) {
+	for _, trust := range []bool{true, false} {
+		e := newEnv(t, func(c *Config) { c.TrustProxy = trust })
+		hdr := map[string]string{"X-PT-CSRF": "1", "Origin": "https://shop.trycloudflare.com", "X-Forwarded-Host": "shop.trycloudflare.com"}
+		res, _ := e.client().do("POST", "/api/v1/s/shop/admin/login", map[string]string{"email": "owner@example.com", "password": "owner-pass-123"}, hdr)
+		if trust && res.StatusCode != 200 {
+			t.Fatalf("trusted proxy: want 200, got %d", res.StatusCode)
+		}
+		if !trust && res.StatusCode != 403 {
+			t.Fatalf("untrusted X-Forwarded-Host must be ignored: want 403, got %d", res.StatusCode)
+		}
+		evil := map[string]string{"X-PT-CSRF": "1", "Origin": "https://evil.example", "X-Forwarded-Host": "shop.trycloudflare.com"}
+		if res, _ := e.client().do("POST", "/api/v1/s/shop/admin/login", map[string]string{"email": "owner@example.com", "password": "owner-pass-123"}, evil); res.StatusCode != 403 {
+			t.Fatalf("foreign origin must still be blocked (trust=%v): %d", trust, res.StatusCode)
+		}
+	}
+}

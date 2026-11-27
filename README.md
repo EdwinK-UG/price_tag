@@ -7,7 +7,7 @@ A shopper walks into a shop, scans a product's barcode with their phone, and see
 * **Works with the shop's existing till/POS**: it only needs a read-only price file (CSV/JSON) pushed to one URL. No access to their system.
 * **No app store, no install**: shoppers scan a QR code at the entrance; the page installs itself like an app and works offline.
 
-See **[docs/REPORT.md](docs/REPORT.md)** for what was built, how well it works (measured), what is *not* done, and a review guide.
+**New here? Follow [docs/TRY-IT.md](docs/TRY-IT.md)** to run a supermarket and a phone end to end. See **[docs/REPORT.md](docs/REPORT.md)** for what was built, how well it works (measured), what is *not* done, and a review guide.
 
 ## Try it in two commands
 

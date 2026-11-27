@@ -31,7 +31,7 @@ test('already-seen prices still work with no connection, and the app itself open
   await ctx.setOffline(true);
   await page.reload();                                                  // served by the service worker
   await page.waitForSelector('#storeName');
-  assert.equal(await page.textContent('#storeName'), 'Kampala Demo Supermarket');
+  assert.equal(await page.textContent('#storeName'), 'Price Tag');
   await page.waitForSelector('.promo');                                 // home page from the saved copy
   assert.match(await page.textContent('#notice'), /No connection/);
 
